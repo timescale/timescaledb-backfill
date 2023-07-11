@@ -1,0 +1,82 @@
+name: CI
+on:
+  # Build all branches, ignore all tags.
+  push:
+    branches:
+      - "**"
+    tags-ignore:
+      - "*"
+
+concurrency:
+  group: ci-${{ github.ref }}-1
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: non-prod
+    outputs:
+      files: ${{ steps.filter.outputs.files }}
+    steps:
+      - name: Setup | Checkout submodules
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          token: ${{ secrets.API_TOKEN_GITHUB }}
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            files:
+              - Cargo.toml
+              - '**.rs'
+
+  lint_build_and_test:
+    name: Lint, check, build, and test
+
+    needs: changes
+    if: ${{ needs.changes.outputs.files == 'true' }}
+
+    strategy:
+      fail-fast: true
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.68.0
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo | Rustfmt
+        run: cargo fmt -- --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        # Restrict to unit tests only. 
+        # The integration suite runs against a docker image.
+        run: cargo test --bins
+
+  # This allows us to set a single job which must pass in GitHub's branch protection rules.
+  ci-result:
+    name: ci result
+    if: always()
+    needs:
+      - changes
+      - lint_build_and_test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the job as a success
+        if: needs.changes.outputs.files == 'false' || needs.lint_build_and_test.result == 'success'
+        run: exit 0
+      - name: Mark the job as a failure
+        if: needs.changes.outputs.files == 'true' && needs.lint_build_and_test.result != 'success'
+        run: exit 1
+
