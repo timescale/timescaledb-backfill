@@ -15,8 +15,7 @@ mod logging;
 mod prepare;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
+pub struct CopyConfig {
     /// Connection string to the source database
     #[arg(long)]
     source: String,
@@ -34,23 +33,44 @@ pub struct Args {
     until: DateTime<Utc>,
 }
 
+#[derive(Parser, Debug)]
+pub enum Command {
+    Copy(CopyConfig),
+    Clean,
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[command(subcommand)]
+    command: Command,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
     setup_logging();
+
+    let args = Args::parse();
     debug!("{args:?}");
 
-    let source_config = Config::from_str(&args.source)?;
-    let target_config = Config::from_str(&args.target)?;
+    match args.command {
+        Command::Copy(args) => {
+            let source_config = Config::from_str(&args.source)?;
+            let target_config = Config::from_str(&args.target)?;
 
-    let mut source = Source::connect(&source_config).await?;
-    let mut target = Target::connect(&target_config).await?;
+            let mut source = Source::connect(&source_config).await?;
+            let mut target = Target::connect(&target_config).await?;
 
-    let chunks = get_chunk_information(&mut source, &args.until).await?;
+            let chunks = get_chunk_information(&mut source, &args.until).await?;
 
-    for chunk in chunks {
-        debug!("copying chunk: {chunk:?}");
-        copy_chunk(&mut source, &mut target, chunk).await?;
+            for chunk in chunks {
+                debug!("copying chunk: {chunk:?}");
+                copy_chunk(&mut source, &mut target, chunk).await?;
+            }
+        }
+        Command::Clean => {
+            todo!()
+        }
     }
 
     Ok(())
