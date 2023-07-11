@@ -1,0 +1,21 @@
+[package]
+name = "timescaledb-backfill"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { version = "1.0.71", default-features = false, features = ["std", "backtrace"] }
+bytes = { version = "1.4.0", default-features = false }
+clap = { version = "4.2.7", default-features = false, features = ["std", "help", "error-context", "env", "derive"] }
+chrono = { version = "0.4.24", default-features = false, features = ["clock", "serde"] }
+futures-lite = { version = "1.13.0", default-features = false, features = ["std"] }
+futures-util = { version = "0.3.28", default-features = false, features = ["sink"] }
+pg_query = { git = "https://github.com/pganalyze/pg_query.rs.git", version = "0.7.0", rev = "2ed85dfdc86e40b6e296d9510867ca1275b675d6", default-features = false }
+rustls = { version = "0.21.1", features = ["dangerous_configuration", "tls12"], default-features = false }
+tokio = { version = "1.28.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "time"], default-features = false }
+tokio-postgres = { version = "0.7.8", features = ["runtime", "with-serde_json-1", "with-chrono-0_4"], default-features = false }
+tokio-postgres-rustls = { version = "0.10.0", default-features = false }
+tracing = { version = "0.1.37", default-features = false, features = ["release_max_level_debug"] }
+tracing-subscriber = { version = "0.3.17", default-features = false, features = ["env-filter", "fmt", "json", "std"] }
