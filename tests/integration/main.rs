@@ -1,1 +1,2 @@
 mod copy_data_from_chunks;
+mod copy_data_from_compressed_chunks;

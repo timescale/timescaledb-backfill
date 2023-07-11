@@ -95,6 +95,20 @@ impl DbAssert {
         self
     }
 
+    pub fn has_compressed_chunk_count<T: AsRef<str>>(
+        &mut self,
+        schema: T,
+        table: T,
+        count: i64,
+    ) -> &mut Self {
+        self.has_table(schema.as_ref(), table.as_ref());
+        let chunk_count = self
+            ._get_compressed_chunk_count(schema.as_ref(), table.as_ref())
+            .unwrap();
+        assert_eq!(chunk_count, count);
+        self
+    }
+
     pub fn has_sequence<T: AsRef<str>>(&mut self, schema: T, sequence: T) -> &mut Self {
         assert!(
             self._has_sequence(schema.as_ref(), sequence.as_ref())
@@ -373,6 +387,18 @@ SELECT EXISTS (
             SELECT count(*) FROM timescaledb_information.chunks
             WHERE hypertable_schema = $1
               AND hypertable_name = $2"#,
+            &[&schema, &table],
+        )?;
+        Ok(row.get("count"))
+    }
+
+    fn _get_compressed_chunk_count(&mut self, schema: &str, table: &str) -> Result<i64> {
+        let row = self.connection().query_one(
+            r#"
+            SELECT count(*) FROM timescaledb_information.chunks
+            WHERE hypertable_schema = $1
+              AND hypertable_name = $2
+              AND is_compressed = true"#,
             &[&schema, &table],
         )?;
         Ok(row.get("count"))
