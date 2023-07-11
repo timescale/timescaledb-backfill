@@ -1,18 +1,18 @@
-use std::str::FromStr;
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use clap::Parser;
-use tokio_postgres::Config;
-use tracing::debug;
 use crate::connect::{Source, Target};
 use crate::execute::copy_chunk;
 use crate::logging::setup_logging;
 use crate::prepare::get_chunk_information;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use clap::Parser;
+use std::str::FromStr;
+use tokio_postgres::Config;
+use tracing::debug;
 
-mod execute;
-mod prepare;
 mod connect;
+mod execute;
 mod logging;
+mod prepare;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -31,7 +31,7 @@ pub struct Args {
 
     /// The completion point to copy chunk data until
     #[arg(short, long)]
-    until: DateTime<Utc>
+    until: DateTime<Utc>,
 }
 
 #[tokio::main]
