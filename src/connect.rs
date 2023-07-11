@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 
 use std::sync::Arc;
 
@@ -6,8 +6,8 @@ use rustls::{
     client::{ServerCertVerified, ServerCertVerifier},
     ClientConfig,
 };
-use tokio_postgres::{config::SslMode, Client, Config, NoTls, SimpleQueryMessage, Transaction};
 use tokio_postgres::IsolationLevel::Serializable;
+use tokio_postgres::{config::SslMode, Client, Config, NoTls, SimpleQueryMessage, Transaction};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::{info, trace, warn};
 
@@ -129,31 +129,34 @@ SELECT
 }
 
 pub struct Source {
-    client: Client
+    client: Client,
 }
 
 impl Source {
     pub(crate) async fn connect(config: &Config) -> Result<Self> {
         let client = connect(config).await?;
-        Ok(Self {
-            client
-        })
+        Ok(Self { client })
     }
 
     pub(crate) async fn transaction(&mut self) -> Result<Transaction<'_>> {
-        Ok(self.client.build_transaction().isolation_level(Serializable).read_only(true).deferrable(true).start().await?)
+        Ok(self
+            .client
+            .build_transaction()
+            .isolation_level(Serializable)
+            .read_only(true)
+            .deferrable(true)
+            .start()
+            .await?)
     }
 }
 
 pub struct Target {
-    pub client: Client
+    pub client: Client,
 }
 
 impl Target {
     pub(crate) async fn connect(config: &Config) -> Result<Self> {
         let client = connect(config).await?;
-        Ok(Self {
-            client
-        })
+        Ok(Self { client })
     }
 }

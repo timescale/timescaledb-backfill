@@ -1,13 +1,13 @@
+use crate::connect::{Source, Target};
+use crate::prepare::Chunk;
 use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
-use tokio_postgres::{CopyInSink, Transaction};
 use tokio_postgres::types::private::BytesMut;
+use tokio_postgres::{CopyInSink, Transaction};
 use tracing::debug;
-use crate::connect::{Source, Target};
-use crate::prepare::Chunk;
 
 pub async fn copy_chunk(source: &mut Source, target: &mut Target, chunk: Chunk) -> Result<()> {
     let source_tx = source.transaction().await?;
@@ -32,8 +32,13 @@ struct CompressedChunk {
     chunk_name: String,
 }
 
-async fn get_compressed_chunk(source_tx: &Transaction<'_>, chunk: &Chunk) -> Result<Option<CompressedChunk>> {
-    let row = source_tx.query_opt(r#"
+async fn get_compressed_chunk(
+    source_tx: &Transaction<'_>,
+    chunk: &Chunk,
+) -> Result<Option<CompressedChunk>> {
+    let row = source_tx
+        .query_opt(
+            r#"
     SELECT
       cch.schema_name
     , cch.table_name
@@ -41,15 +46,23 @@ async fn get_compressed_chunk(source_tx: &Transaction<'_>, chunk: &Chunk) -> Res
     JOIN _timescaledb_catalog.chunk cch ON ch.compressed_chunk_id = cch.id
     WHERE ch.schema_name = $1
       AND ch.table_name = $2
-    "#, &[&chunk.chunk_schema, &chunk.chunk_name]).await?;
+    "#,
+            &[&chunk.chunk_schema, &chunk.chunk_name],
+        )
+        .await?;
     Ok(row.map(|r| CompressedChunk {
         chunk_schema: r.get("schema_name"),
         chunk_name: r.get("table_name"),
     }))
 }
 
-async fn get_chunk_with_same_dimensions(tx: &Transaction<'_>, chunk: &Chunk) -> Result<Option<Chunk>> {
-    let row = tx.query_opt(r#"
+async fn get_chunk_with_same_dimensions(
+    tx: &Transaction<'_>,
+    chunk: &Chunk,
+) -> Result<Option<Chunk>> {
+    let row = tx
+        .query_opt(
+            r#"
     SELECT
           h.schema_name as hypertable_schema
         , h.table_name as hypertable_name
@@ -67,7 +80,15 @@ async fn get_chunk_with_same_dimensions(tx: &Transaction<'_>, chunk: &Chunk) -> 
       AND ds.range_start = $3
       AND ds.range_end = $4
       ;
-    "#, &[&chunk.hypertable_schema, &chunk.hypertable_name, &chunk.dimension_start, &chunk.dimension_end]).await?;
+    "#,
+            &[
+                &chunk.hypertable_schema,
+                &chunk.hypertable_name,
+                &chunk.dimension_start,
+                &chunk.dimension_end,
+            ],
+        )
+        .await?;
     Ok(row.map(|r| Chunk {
         hypertable_schema: r.get("hypertable_schema"),
         hypertable_name: r.get("hypertable_name"),
@@ -79,37 +100,73 @@ async fn get_chunk_with_same_dimensions(tx: &Transaction<'_>, chunk: &Chunk) -> 
     }))
 }
 
-async fn copy_uncompressed_chunk_data(source_tx: &Transaction<'_>, target_tx: &Transaction<'_>, chunk: &Chunk) -> Result<()> {
+async fn copy_uncompressed_chunk_data(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    chunk: &Chunk,
+) -> Result<()> {
     debug!("Copying uncompressed chunk");
-    let target_chunk = get_chunk_with_same_dimensions(&target_tx, &chunk).await?.unwrap();
+    let target_chunk = get_chunk_with_same_dimensions(target_tx, chunk)
+        .await?
+        .unwrap();
 
-    let source_chunk_name = format!("{}.{}", quote_ident(&chunk.chunk_schema), quote_ident(&chunk.chunk_name));
-    let target_chunk_name = format!("{}.{}", quote_ident(&target_chunk.chunk_schema), quote_ident(&target_chunk.chunk_name));
+    let source_chunk_name = format!(
+        "{}.{}",
+        quote_ident(&chunk.chunk_schema),
+        quote_ident(&chunk.chunk_name)
+    );
+    let target_chunk_name = format!(
+        "{}.{}",
+        quote_ident(&target_chunk.chunk_schema),
+        quote_ident(&target_chunk.chunk_name)
+    );
 
-    truncate_chunk(&target_tx, &target_chunk_name).await?;
-    copy_chunk_from_source_to_target(&source_tx, &target_tx, &source_chunk_name, &target_chunk_name).await
+    truncate_chunk(target_tx, &target_chunk_name).await?;
+    copy_chunk_from_source_to_target(source_tx, target_tx, &source_chunk_name, &target_chunk_name)
+        .await
 
     // TODO: handle current chunk is active chunk
 }
 
 async fn truncate_chunk(target_tx: &Transaction<'_>, chunk_name: &str) -> Result<()> {
     debug!("Truncating chunk {chunk_name}");
-    target_tx.execute(&format!("TRUNCATE TABLE {chunk_name}"), &[]).await?;
+    target_tx
+        .execute(&format!("TRUNCATE TABLE {chunk_name}"), &[])
+        .await?;
     Ok(())
 }
 
-async fn copy_compressed_chunk_data(source_tx: &Transaction<'_>, target_tx: &Transaction<'_>, chunk: &CompressedChunk) -> Result<()> {
+async fn copy_compressed_chunk_data(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    chunk: &CompressedChunk,
+) -> Result<()> {
     debug!("Copying compressed chunk");
     // TODO get actual compressed chunk name
 
-    let source_chunk_name = format!("{}.{}", quote_ident(&chunk.chunk_schema), quote_ident(&chunk.chunk_name));
-    let target_chunk_name = format!("{}.{}", quote_ident(&chunk.chunk_schema), quote_ident(&chunk.chunk_name));
+    let source_chunk_name = format!(
+        "{}.{}",
+        quote_ident(&chunk.chunk_schema),
+        quote_ident(&chunk.chunk_name)
+    );
+    let target_chunk_name = format!(
+        "{}.{}",
+        quote_ident(&chunk.chunk_schema),
+        quote_ident(&chunk.chunk_name)
+    );
 
-    copy_chunk_from_source_to_target(source_tx, &target_tx, &source_chunk_name, &target_chunk_name).await
+    copy_chunk_from_source_to_target(source_tx, target_tx, &source_chunk_name, &target_chunk_name)
+        .await
 }
 
-async fn copy_chunk_from_source_to_target(source_tx: &Transaction<'_>, target_tx: &Transaction<'_>, source_chunk_name: &str, target_chunk_name: &str) -> Result<()> {
-    let copy_out = format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)");
+async fn copy_chunk_from_source_to_target(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    source_chunk_name: &str,
+    target_chunk_name: &str,
+) -> Result<()> {
+    let copy_out =
+        format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)");
     debug!("{copy_out}");
 
     let copy_in = format!("COPY {target_chunk_name} FROM STDIN WITH (FORMAT BINARY)");

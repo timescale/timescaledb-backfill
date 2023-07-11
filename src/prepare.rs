@@ -1,6 +1,6 @@
+use crate::connect::Source;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use crate::connect::Source;
 
 static CHUNK_INFORMATION_QUERY: &str = r#"
     SELECT
@@ -30,15 +30,25 @@ pub struct Chunk {
     pub active_chunk: bool,
 }
 
-pub async fn get_chunk_information(source: &mut Source, until: &DateTime<Utc>) -> Result<Vec<Chunk>> {
-    let rows = source.transaction().await?.query(CHUNK_INFORMATION_QUERY, &[until]).await?;
-    Ok(rows.iter().map(|r| Chunk {
-        hypertable_schema: r.get("hypertable_schema"),
-        hypertable_name: r.get("hypertable_name"),
-        chunk_schema: r.get("chunk_schema"),
-        chunk_name: r.get("chunk_name"),
-        dimension_start: r.get("dimension_start"),
-        dimension_end: r.get("dimension_end"),
-        active_chunk: r.get("active_chunk")
-    }).collect())
+pub async fn get_chunk_information(
+    source: &mut Source,
+    until: &DateTime<Utc>,
+) -> Result<Vec<Chunk>> {
+    let rows = source
+        .transaction()
+        .await?
+        .query(CHUNK_INFORMATION_QUERY, &[until])
+        .await?;
+    Ok(rows
+        .iter()
+        .map(|r| Chunk {
+            hypertable_schema: r.get("hypertable_schema"),
+            hypertable_name: r.get("hypertable_name"),
+            chunk_schema: r.get("chunk_schema"),
+            chunk_name: r.get("chunk_name"),
+            dimension_start: r.get("dimension_start"),
+            dimension_end: r.get("dimension_end"),
+            active_chunk: r.get("active_chunk"),
+        })
+        .collect())
 }
