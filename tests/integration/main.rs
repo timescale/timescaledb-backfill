@@ -1,7 +1,8 @@
 use anyhow::Result;
 use assert_cmd::prelude::*;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::ffi::OsStr;
+use std::str::FromStr;
 use test_common::PgVersion::PG15;
 use test_common::*;
 use testcontainers::clients::Cli;
@@ -36,14 +37,15 @@ static CREATE_CONTINUOUS_AGGREGATE: &str = r"
 ";
 
 #[derive(Debug)]
-struct TestCase<S, F>
+struct TestCase<'a, S, F>
 where
     S: AsRef<OsStr>,
-    F: Fn(&mut DbAssert),
+    F: Fn(&mut DbAssert, &mut DbAssert),
 {
     setup_sql: Vec<PsqlInput<S>>,
-    completion_time: DateTime<Utc>,
-    post_skeleton_sql: Vec<PsqlInput<S>>,
+    completion_time: &'a str,
+    post_skeleton_source_sql: Vec<PsqlInput<S>>,
+    post_skeleton_target_sql: Vec<PsqlInput<S>>,
     asserts: Box<F>,
 }
 
@@ -58,7 +60,9 @@ macro_rules! generate_tests {
     }
 }
 
-fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert)>(test_case: TestCase<S, F>) -> Result<()> {
+fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
+    test_case: TestCase<S, F>,
+) -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
     let docker = Cli::default();
@@ -72,28 +76,36 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert)>(test_case: TestCase<S, F>) ->
 
     copy_skeleton_schema(&source_container, &target_container)?;
 
-    for sql in test_case.post_skeleton_sql {
+    for sql in test_case.post_skeleton_source_sql {
         psql(&source_container, sql)?;
     }
 
+    for sql in test_case.post_skeleton_target_sql {
+        psql(&target_container, sql)?;
+    }
+
+    let completion_time = DateTime::from_utc(
+        NaiveDateTime::from_str(test_case.completion_time).unwrap(),
+        Utc,
+    );
+
     run_backfill(
-        TestConfig::new(
-            &source_container,
-            &target_container,
-            test_case.completion_time,
-        ),
+        TestConfig::new(&source_container, &target_container, completion_time),
         "copy",
     )
     .unwrap()
     .assert()
     .success();
 
-    for (db, name) in &[(&source_container, "source"), (&target_container, "target")] {
-        let mut dbassert = DbAssert::new(&db.connection_string())
-            .unwrap()
-            .with_name(name);
-        (test_case.asserts)(&mut dbassert);
-    }
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("source");
+
+    (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
+
     Ok(())
 }
 
@@ -105,12 +117,15 @@ generate_tests!(
                 PsqlInput::Sql(SETUP_HYPERTABLE),
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
             ],
-            completion_time: Utc::now(),
-            post_skeleton_sql: vec![],
-            asserts: Box::new(|dbassert: &mut DbAssert| {
-                dbassert
-                    .has_table_count("public", "metrics", 744)
-                    .has_chunk_count("public", "metrics", 5);
+            completion_time: "2023-06-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5);
+                }
             }),
         }
     ),
@@ -123,13 +138,49 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
-            completion_time: Utc::now(),
-            post_skeleton_sql: vec![],
-            asserts: Box::new(|dbassert: &mut DbAssert| {
-                dbassert
+            completion_time: "2023-06-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5)
+                        .has_compressed_chunk_count("public", "metrics", 1);
+                }
+            }),
+        }
+    ),
+    (
+        copy_correctly_delete_rows_in_active_chunk_in_target,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            // Completion time is just inside of a chunk boundary, so if we implement this incorrectly,
+            // the chunk will end up with rows from the source with time > completion_time.
+            completion_time: "2023-05-26T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![
+                // Simulate beginning dual-write at 2023-05-20T00:00:00Z
+                PsqlInput::Sql(
+                    r"
+                    INSERT INTO metrics (time, device_id, val)
+                    SELECT time, 2, random()
+                    FROM generate_series('2023-05-20T00:00:00Z'::timestamptz, '2023-06-10T23:30:00Z'::timestamptz, '1 hour'::interval) time;
+                "
+                ),
+            ],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
                     .has_table_count("public", "metrics", 744)
-                    .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 1);
+                    .has_chunk_count("public", "metrics", 5);
+                target
+                    .has_table_count("public", "metrics", 984)
+                    .has_chunk_count("public", "metrics", 7);
             }),
         }
     ),
@@ -142,18 +193,21 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
                 PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
             ],
-            completion_time: Utc::now(),
-            post_skeleton_sql: vec![],
-            asserts: Box::new(|dbassert: &mut DbAssert| {
-                dbassert
-                    .has_table_count("public", "metrics", 744)
-                    .has_chunk_count("public", "metrics", 5)
-                    .has_cagg_mt_chunk_count("public", "cagg", 1)
-                    .has_table_count(
-                        "_timescaledb_catalog",
-                        "continuous_aggs_hypertable_invalidation_log",
-                        0,
-                    );
+            completion_time: "2023-06-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5)
+                        .has_cagg_mt_chunk_count("public", "cagg", 1)
+                        .has_table_count(
+                            "_timescaledb_catalog",
+                            "continuous_aggs_hypertable_invalidation_log",
+                            0,
+                        );
+                }
             }),
         }
     ),
