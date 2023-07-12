@@ -3,18 +3,24 @@ use postgres::{Client, Config};
 use std::str::FromStr;
 use tokio_postgres::NoTls;
 
-use crate::HasConnectionString;
+use crate::{HasConnectionString, TestConnectionString};
 
 pub struct DbAssert {
     client: Client,
+    name: Option<String>,
 }
 
 impl DbAssert {
-    pub fn new<T: HasConnectionString>(dsn: &T) -> Result<Self> {
+    pub fn new(dsn: &TestConnectionString) -> Result<Self> {
         let config = Config::from_str(dsn.connection_string().as_str())?;
         let client = config.connect(NoTls)?;
 
-        Ok(Self { client })
+        Ok(Self { client, name: None })
+    }
+
+    pub fn with_name<T: AsRef<str>>(mut self, name: T) -> Self {
+        self.name = Some(String::from(name.as_ref()));
+        self
     }
 
     pub fn connection(&mut self) -> &mut Client {
@@ -27,14 +33,19 @@ impl DbAssert {
         let ext_ver: Option<String> = self._get_installed_extension_version(extension).unwrap();
         assert!(
             ext_ver.is_some(),
-            "extension '{}' is not installed",
+            "{}extension '{}' is not installed",
+            self.name(),
             extension
         );
         let ext_ver = ext_ver.unwrap();
         assert_eq!(
-            ext_ver, version,
-            "extension '{}' version is '{}', not '{}'",
-            extension, ext_ver, version
+            ext_ver,
+            version,
+            "{}extension '{}' version is '{}', not '{}'",
+            self.name(),
+            extension,
+            ext_ver,
+            version
         );
         self
     }
@@ -42,7 +53,8 @@ impl DbAssert {
     pub fn has_schema<T: AsRef<str>>(&mut self, schema: T) -> &mut Self {
         assert!(
             self._has_schema(schema.as_ref()).unwrap(),
-            "schema '{}' doesn't exist",
+            "{}schema '{}' doesn't exist",
+            self.name(),
             schema.as_ref()
         );
         self
@@ -51,7 +63,8 @@ impl DbAssert {
     pub fn not_has_schema<T: AsRef<str>>(&mut self, schema: T) -> &mut Self {
         assert!(
             !self._has_schema(schema.as_ref()).unwrap(),
-            "schema '{}' exists",
+            "{}schema '{}' exists",
+            self.name(),
             schema.as_ref()
         );
         self
@@ -60,7 +73,8 @@ impl DbAssert {
     pub fn has_table<T: AsRef<str>>(&mut self, schema: T, table: T) -> &mut Self {
         assert!(
             self._has_table(schema.as_ref(), table.as_ref()).unwrap(),
-            "table '{}.{}' doesn't exist",
+            "{}table '{}.{}' doesn't exist",
+            self.name(),
             schema.as_ref(),
             table.as_ref()
         );
@@ -70,7 +84,8 @@ impl DbAssert {
     pub fn not_has_table<T: AsRef<str>>(&mut self, schema: T, table: T) -> &mut Self {
         assert!(
             !self._has_table(schema.as_ref(), table.as_ref()).unwrap(),
-            "table '{}.{}' exists",
+            "{}table '{}.{}' exists",
+            self.name(),
             schema.as_ref(),
             table.as_ref()
         );
@@ -82,7 +97,16 @@ impl DbAssert {
         let table_count = self
             ._get_table_count(schema.as_ref(), table.as_ref())
             .unwrap();
-        assert_eq!(table_count, count);
+        assert_eq!(
+            table_count,
+            count,
+            "{}table '{}.{}' count is '{}', not '{}'",
+            self.name(),
+            schema.as_ref(),
+            table.as_ref(),
+            table_count,
+            count
+        );
         self
     }
 
@@ -91,7 +115,16 @@ impl DbAssert {
         let chunk_count = self
             ._get_chunk_count(schema.as_ref(), table.as_ref())
             .unwrap();
-        assert_eq!(chunk_count, count);
+        assert_eq!(
+            chunk_count,
+            count,
+            "{}table '{}.{}' chunk count is '{}', not '{}'",
+            self.name(),
+            schema.as_ref(),
+            table.as_ref(),
+            chunk_count,
+            count
+        );
         self
     }
 
@@ -105,7 +138,16 @@ impl DbAssert {
         let chunk_count = self
             ._get_compressed_chunk_count(schema.as_ref(), table.as_ref())
             .unwrap();
-        assert_eq!(chunk_count, count);
+        assert_eq!(
+            chunk_count,
+            count,
+            "{}table '{}.{}' compressed chunk count is '{}', not '{}'",
+            self.name(),
+            schema.as_ref(),
+            table.as_ref(),
+            chunk_count,
+            count
+        );
         self
     }
 
@@ -113,7 +155,8 @@ impl DbAssert {
         assert!(
             self._has_sequence(schema.as_ref(), sequence.as_ref())
                 .unwrap(),
-            "sequence '{}.{}' does not exist",
+            "{}sequence '{}.{}' does not exist",
+            self.name(),
             schema.as_ref(),
             sequence.as_ref()
         );
@@ -125,7 +168,8 @@ impl DbAssert {
             !self
                 ._has_sequence(schema.as_ref(), sequence.as_ref())
                 .unwrap(),
-            "sequence '{}.{}' exists",
+            "{}sequence '{}.{}' exists",
+            self.name(),
             schema.as_ref(),
             sequence.as_ref()
         );
@@ -160,7 +204,8 @@ impl DbAssert {
         assert!(
             self._has_job(schema.as_ref(), table.as_ref(), proc_name.as_ref())
                 .unwrap(),
-            "job '{}' for '{}.{}' not found",
+            "{}job '{}' for '{}.{}' not found",
+            self.name(),
             proc_name.as_ref(),
             schema.as_ref(),
             table.as_ref(),
@@ -173,7 +218,8 @@ impl DbAssert {
                 owner.as_ref()
             )
             .unwrap(),
-            "job '{}' owned by {} for '{}.{}' not found",
+            "{}job '{}' owned by {} for '{}.{}' not found",
+            self.name(),
             proc_name.as_ref(),
             owner.as_ref(),
             schema.as_ref(),
@@ -187,7 +233,8 @@ impl DbAssert {
                 owner.as_ref()
             )
             .unwrap(),
-            "job '{}' owned by {} for '{}.{}' is not scheduled",
+            "{}job '{}' owned by {} for '{}.{}' is not scheduled",
+            self.name(),
             proc_name.as_ref(),
             owner.as_ref(),
             schema.as_ref(),
@@ -217,7 +264,8 @@ impl DbAssert {
         assert_eq!(
             "Success",
             last_run_status,
-            "job '{}' owned by {} for '{}.{}' last run has status {}",
+            "{}job '{}' owned by {} for '{}.{}' last run has status {}",
+            self.name(),
             proc_name.as_ref(),
             owner.as_ref(),
             schema.as_ref(),
@@ -226,6 +274,13 @@ impl DbAssert {
         );
 
         self
+    }
+
+    fn name(&self) -> String {
+        self.name
+            .as_ref()
+            .map(|n| format!("{n}: "))
+            .unwrap_or(String::new())
     }
 
     fn _get_job_id(&mut self, schema: &str, name: &str, proc_name: &str, owner: &str) -> i32 {

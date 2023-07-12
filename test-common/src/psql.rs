@@ -5,6 +5,7 @@ use std::process::Command;
 
 use crate::*;
 
+#[derive(Debug)]
 pub enum PsqlInput<S: AsRef<OsStr>> {
     File(S),
     Sql(S),
