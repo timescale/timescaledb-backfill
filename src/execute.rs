@@ -48,19 +48,84 @@ async fn copy_uncompressed_chunk_data(
         quote_ident(&target_chunk.chunk_name)
     );
 
+    let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk_name).await?;
     if !chunk.active_chunk {
-        truncate_chunk(target_tx, &target_chunk_name).await?;
+        delete_all_rows_from_chunk(target_tx, &target_chunk_name).await?;
     } else {
         // TODO: delete rows in active chunk where `time` < completion point
+        // TODO: handle if there is a compressed chunk for the active chunk
     }
     copy_chunk_from_source_to_target(source_tx, target_tx, &source_chunk_name, &target_chunk_name)
-        .await
+        .await?;
+    if trigger_dropped {
+        create_invalidation_trigger(target_tx, &target_chunk_name).await?;
+    }
+    Ok(())
 }
 
-async fn truncate_chunk(target_tx: &Transaction<'_>, chunk_name: &str) -> Result<()> {
-    debug!("Truncating chunk {chunk_name}");
+async fn drop_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> Result<bool> {
+    debug!("Attempting to drop invalidation trigger on '{chunk_name}'");
+    // NOTE: It's not possible to selectively disable the trigger using
+    // `ALTER TABLE ... DISABLE TRIGGER ...` because timescaledb intercepts the
+    // statement and prohibits it. So we must actually drop and recreate it.
+    let trigger_exists = tx
+        .query_one(
+            r"
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_trigger t
+            JOIN pg_class c ON t.tgrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE t.tgname = 'ts_cagg_invalidation_trigger'
+              AND format('%I.%I', n.nspname, c.relname)::regclass = $1::text::regclass
+            )",
+            &[&chunk_name],
+        )
+        .await?
+        .get(0);
+    if trigger_exists {
+        tx.execute(
+            &format!("DROP TRIGGER ts_cagg_invalidation_trigger ON {chunk_name}"),
+            &[],
+        )
+        .await?;
+    }
+    Ok(trigger_exists)
+}
+
+async fn create_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> Result<()> {
+    debug!("Creating invalidation trigger on '{chunk_name}'");
+    let hypertable_id: i32 = tx
+        .query_one(
+            r"
+        SELECT hypertable_id
+        FROM _timescaledb_catalog.chunk
+        WHERE format('%I.%I', schema_name, table_name)::regclass = $1::text::regclass
+    ",
+            &[&chunk_name],
+        )
+        .await?
+        .get("hypertable_id");
+
+    tx.execute(&format!(r"
+        CREATE TRIGGER ts_cagg_invalidation_trigger
+        AFTER INSERT OR DELETE OR UPDATE ON {chunk_name}
+        FOR EACH ROW
+        EXECUTE FUNCTION _timescaledb_internal.continuous_agg_invalidation_trigger('{hypertable_id}')
+    "), &[]).await?;
+    Ok(())
+}
+
+async fn delete_all_rows_from_chunk(target_tx: &Transaction<'_>, chunk_name: &str) -> Result<()> {
+    debug!("Deleting all rows from chunk {chunk_name}");
+    // NOTE: We're not using `TRUNCATE` on purpose here. We're trying to avoid
+    // having rows written into the cagg hypertable invalidation log (which we
+    // don't have permissions to modify).
+    // We _can_ disable the cagg invalidation trigger, but if we issue a
+    // `TRUNCATE`, timescale intercepts it and helpfully writes the
+    // invalidation log entries.
     target_tx
-        .execute(&format!("TRUNCATE TABLE {chunk_name}"), &[])
+        .execute(&format!("DELETE FROM ONLY {chunk_name}"), &[])
         .await?;
     Ok(())
 }

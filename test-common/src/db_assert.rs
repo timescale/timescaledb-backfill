@@ -110,6 +110,19 @@ impl DbAssert {
         self
     }
 
+    pub fn has_cagg_mt_chunk_count<T: AsRef<str>>(
+        &mut self,
+        schema: T,
+        table: T,
+        count: i64,
+    ) -> &mut Self {
+        let (mt_schema, mt_table) = self
+            ._get_cagg_materialized_table(schema.as_ref(), table.as_ref())
+            .unwrap();
+        self.has_chunk_count(mt_schema, mt_table, count);
+        self
+    }
+
     pub fn has_chunk_count<T: AsRef<str>>(&mut self, schema: T, table: T, count: i64) -> &mut Self {
         self.has_table(schema.as_ref(), table.as_ref());
         let chunk_count = self
@@ -457,5 +470,26 @@ SELECT EXISTS (
             &[&schema, &table],
         )?;
         Ok(row.get("count"))
+    }
+
+    fn _get_cagg_materialized_table(
+        &mut self,
+        schema: &str,
+        table: &str,
+    ) -> Result<(String, String)> {
+        let row = self.connection().query_one(
+            r"
+            SELECT
+              materialization_hypertable_schema as mt_schema
+            , materialization_hypertable_name as mt_name
+            FROM timescaledb_information.continuous_aggregates
+            WHERE view_schema = $1
+              AND view_name = $2
+        ",
+            &[&schema, &table],
+        )?;
+        let mt_schema = row.get("mt_schema");
+        let mt_name = row.get("mt_name");
+        Ok((mt_schema, mt_name))
     }
 }

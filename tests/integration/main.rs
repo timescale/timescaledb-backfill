@@ -1,4 +1,5 @@
 use anyhow::Result;
+use assert_cmd::prelude::*;
 use chrono::{DateTime, Utc};
 use std::ffi::OsStr;
 use test_common::PgVersion::PG15;
@@ -25,6 +26,13 @@ static ENABLE_HYPERTABLE_COMPRESSION: &str = r"
 
 static COMPRESS_ONE_CHUNK: &str = r"
     SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false LIMIT 1;
+";
+
+static CREATE_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW cagg
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('1 day', time), device_id, max(val) FROM metrics
+    GROUP BY time_bucket('1 day', time), device_id;
 ";
 
 #[derive(Debug)]
@@ -75,7 +83,10 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert)>(test_case: TestCase<S, F>) ->
             test_case.completion_time,
         ),
         "copy",
-    )?;
+    )
+    .unwrap()
+    .assert()
+    .success();
 
     for (db, name) in &[(&source_container, "source"), (&target_container, "target")] {
         let mut dbassert = DbAssert::new(&db.connection_string())
@@ -119,6 +130,30 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 1);
+            }),
+        }
+    ),
+    (
+        copy_continuous_aggregates,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: Utc::now(),
+            post_skeleton_sql: vec![],
+            asserts: Box::new(|dbassert: &mut DbAssert| {
+                dbassert
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_cagg_mt_chunk_count("public", "cagg", 1)
+                    .has_table_count(
+                        "_timescaledb_catalog",
+                        "continuous_aggs_hypertable_invalidation_log",
+                        0,
+                    );
             }),
         }
     ),
