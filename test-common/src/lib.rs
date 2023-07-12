@@ -78,7 +78,7 @@ pub fn run_backfill(config: TestConfig, action: &str) -> Result<Output> {
         .spawn()
         .expect("Couldn't launch timescaledb-backfill");
 
-    child.wait_with_output().context("foobar")
+    child.wait_with_output().context("backfill process failed")
 }
 
 pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Result<()> {
