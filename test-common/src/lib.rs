@@ -54,7 +54,7 @@ pub fn postgres(version: PgVersion) -> GenericImage {
 /// Prepares a testcontainer image object for the latest version of
 /// TimescaleDB and a given version of PostgreSQL
 pub fn timescaledb(pg_version: PgVersion) -> GenericImage {
-    let version_tag = format!("pg{}-latest", pg_version);
+    let version_tag = format!("pg{}", pg_version);
     generic_postgres(TIMESCALEDB_IMAGE, version_tag.as_str())
 }
 
