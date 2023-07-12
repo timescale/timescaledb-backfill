@@ -8,11 +8,13 @@ use clap::Parser;
 use std::str::FromStr;
 use tokio_postgres::Config;
 use tracing::debug;
+use crate::task::{claim_task, load_queue};
 
 mod connect;
 mod execute;
 mod logging;
 mod prepare;
+mod task;
 
 #[derive(Parser, Debug)]
 pub struct CopyConfig {
@@ -61,12 +63,31 @@ async fn main() -> Result<()> {
             let mut source = Source::connect(&source_config).await?;
             let mut target = Target::connect(&target_config).await?;
 
+            task::init(&mut target).await?;
+            load_queue(&mut target).await?;
+
+            loop {
+                let mut target_tx = target.client.transaction().await?;
+                match claim_task(&mut target_tx, &args.until).await? {
+                    Some(task) => {
+                        debug!("claimed task: {task:?}");
+
+                        target_tx.commit().await?;
+                    },
+                    None => {
+                        target_tx.rollback().await?;
+                        break;
+                    }
+                }
+            }
+            /*
             let chunks = get_chunk_information(&mut source, &args.until).await?;
 
             for chunk in chunks {
                 debug!("copying chunk: {chunk:?}");
                 copy_chunk(&mut source, &mut target, chunk).await?;
             }
+            */
         }
         Command::Clean => {
             todo!()
