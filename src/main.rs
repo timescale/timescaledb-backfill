@@ -65,6 +65,10 @@ async fn main() -> Result<()> {
             let hypertables = get_hypertable_information(&mut source).await?;
             abort_if_hypertable_setup_not_supported(&hypertables);
 
+            let hypertables = get_hypertable_information(&mut source).await?;
+
+            abort_if_hypertable_setup_not_supported(&hypertables);
+
             let chunks = get_chunk_information(&mut source, &args.until).await?;
 
             let mut work_items_manager = work_items::Manager::new(chunks);
