@@ -68,7 +68,7 @@ impl TestConnectionString {
         ];
         let formatted = components
             .into_iter()
-            .map(|f| f.unwrap_or("".into()) + " ")
+            .map(|f| f.unwrap_or_else(|| "".into()) + " ")
             .collect();
         Self {
             internal,
