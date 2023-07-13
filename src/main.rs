@@ -1,12 +1,12 @@
-use crate::connect::{Source, Target};
-use crate::execute::copy_chunk;
+use crate::connect::Source;
 use crate::logging::setup_logging;
 use crate::prepare::CompressionState::CompressedHypertable;
 use crate::prepare::{get_chunk_information, get_hypertable_information, Hypertable};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use std::str::FromStr;
+use tokio::task::JoinSet;
 use tokio_postgres::Config;
 use tracing::debug;
 
@@ -14,6 +14,8 @@ mod connect;
 mod execute;
 mod logging;
 mod prepare;
+mod work_items;
+mod workers;
 
 #[derive(Parser, Debug)]
 pub struct CopyConfig {
@@ -60,17 +62,33 @@ async fn main() -> Result<()> {
             let target_config = Config::from_str(&args.target)?;
 
             let mut source = Source::connect(&source_config).await?;
-            let mut target = Target::connect(&target_config).await?;
-
             let hypertables = get_hypertable_information(&mut source).await?;
-
             abort_if_hypertable_setup_not_supported(&hypertables);
 
             let chunks = get_chunk_information(&mut source, &args.until).await?;
 
-            for chunk in chunks {
-                debug!("copying chunk: {chunk:?}");
-                copy_chunk(&mut source, &mut target, chunk, &args.until).await?;
+            let mut work_items_manager = work_items::Manager::new(chunks);
+
+            let mut pool = workers::Pool::new(
+                args.parallelism.into(),
+                work_items_manager.rx.clone(),
+                args.until,
+                &source_config,
+                &target_config,
+            )
+            .await;
+
+            let mut tasks = JoinSet::new();
+            tasks.spawn(async move {
+                work_items_manager
+                    .dispatch_work()
+                    .await
+                    .with_context(|| "dispatch work error")
+            });
+            tasks.spawn(async move { pool.join().await.with_context(|| "worker pool error") });
+
+            while let Some(res) = tasks.join_next().await {
+                res??;
             }
         }
         Command::Clean => {

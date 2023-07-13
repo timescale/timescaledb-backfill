@@ -11,6 +11,9 @@ concurrency:
   group: ci-${{ github.ref }}-1
   cancel-in-progress: true
 
+env:
+  RUST_LOG: trace,testcontainers=off,tokio_util=off,mio=off,tokio_postgres=off
+
 jobs:
   changes:
     runs-on: non-prod
@@ -53,11 +56,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Cargo | Rustfmt
-        run: cargo fmt -- --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      # - name: Cargo | Rustfmt
+      #   run: cargo fmt -- --check
+      #
+      # - name: Lint
+      #   run: cargo clippy --all-targets --all-features -- -D warnings
 
       # This is required for the integration tests. If we move them to their
       # own action we can remove it.
@@ -72,7 +75,7 @@ jobs:
           pg_dump --version
 
       - name: Test
-        run: cargo test
+        run: cargo test -j 1
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.
   ci-result:

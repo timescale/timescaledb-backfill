@@ -19,15 +19,15 @@ pub async fn copy_chunk(
     let source_tx = source.transaction().await?;
     let target_tx = target.client.transaction().await?;
 
+    copy_uncompressed_chunk_data(&source_tx, &target_tx, &chunk, until).await?;
+
     let compressed_chunk = get_compressed_chunk(&source_tx, &chunk).await?;
     if compressed_chunk.is_some() {
         // TODO: create compressed chunk in target, if missing
-    }
-    copy_uncompressed_chunk_data(&source_tx, &target_tx, &chunk, until).await?;
-    if compressed_chunk.is_some() {
         let compressed_chunk = compressed_chunk.unwrap();
         copy_compressed_chunk_data(&source_tx, &target_tx, &compressed_chunk).await?;
     }
+
     target_tx.commit().await?;
     source_tx.commit().await?;
     Ok(())
@@ -40,9 +40,11 @@ async fn copy_uncompressed_chunk_data(
     until: &DateTime<Utc>,
 ) -> Result<()> {
     debug!("Copying uncompressed chunk");
-    let target_chunk = get_chunk_with_same_dimensions(target_tx, chunk)
-        .await?
-        .unwrap();
+    let target_chunk = match get_chunk_with_same_dimensions(target_tx, chunk).await? {
+        Some(chunk) => chunk,
+        // TODO: chunk creation
+        None => unimplemented!("create chunk with same dimensions"),
+    };
 
     let source_chunk_name = format!(
         "{}.{}",
@@ -290,6 +292,7 @@ async fn get_chunk_with_same_dimensions(
     tx: &Transaction<'_>,
     chunk: &Chunk,
 ) -> Result<Option<Chunk>> {
+    // TODO: match dimension names and ranges
     let row = tx
         .query_opt(
             r#"
