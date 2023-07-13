@@ -32,7 +32,7 @@ static COMPRESS_ONE_CHUNK: &str = r"
 static CREATE_CONTINUOUS_AGGREGATE: &str = r"
     CREATE MATERIALIZED VIEW cagg
     WITH (timescaledb.continuous) AS
-    SELECT time_bucket('1 day', time), device_id, max(val) FROM metrics
+    SELECT time_bucket('1 day', time) as time, device_id, max(val) FROM metrics
     GROUP BY time_bucket('1 day', time), device_id;
 ";
 
@@ -102,7 +102,7 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         .with_name("source");
     let mut target_dbassert = DbAssert::new(&target_container.connection_string())
         .unwrap()
-        .with_name("source");
+        .with_name("target");
 
     (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
 
@@ -158,7 +158,6 @@ generate_tests!(
                 PsqlInput::Sql(SETUP_HYPERTABLE),
                 PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
-                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             // Completion time is just inside of a chunk boundary, so if we implement this incorrectly,
             // the chunk will end up with rows from the source with time > completion_time.

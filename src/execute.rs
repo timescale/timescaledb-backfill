@@ -2,6 +2,7 @@ use crate::connect::{Source, Target};
 use crate::prepare::Chunk;
 use anyhow::Result;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
@@ -9,7 +10,12 @@ use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, Transaction};
 use tracing::debug;
 
-pub async fn copy_chunk(source: &mut Source, target: &mut Target, chunk: Chunk) -> Result<()> {
+pub async fn copy_chunk(
+    source: &mut Source,
+    target: &mut Target,
+    chunk: Chunk,
+    until: &DateTime<Utc>,
+) -> Result<()> {
     let source_tx = source.transaction().await?;
     let target_tx = target.client.transaction().await?;
 
@@ -17,7 +23,7 @@ pub async fn copy_chunk(source: &mut Source, target: &mut Target, chunk: Chunk) 
     if compressed_chunk.is_some() {
         // TODO: create compressed chunk in target, if missing
     }
-    copy_uncompressed_chunk_data(&source_tx, &target_tx, &chunk).await?;
+    copy_uncompressed_chunk_data(&source_tx, &target_tx, &chunk, until).await?;
     if compressed_chunk.is_some() {
         let compressed_chunk = compressed_chunk.unwrap();
         copy_compressed_chunk_data(&source_tx, &target_tx, &compressed_chunk).await?;
@@ -31,6 +37,7 @@ async fn copy_uncompressed_chunk_data(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
     chunk: &Chunk,
+    until: &DateTime<Utc>,
 ) -> Result<()> {
     debug!("Copying uncompressed chunk");
     let target_chunk = get_chunk_with_same_dimensions(target_tx, chunk)
@@ -52,14 +59,42 @@ async fn copy_uncompressed_chunk_data(
     if !chunk.active_chunk {
         delete_all_rows_from_chunk(target_tx, &target_chunk_name).await?;
     } else {
-        // TODO: delete rows in active chunk where `time` < completion point
-        // TODO: handle if there is a compressed chunk for the active chunk
+        delete_data_until(target_tx, &target_chunk_name, until).await?;
     }
-    copy_chunk_from_source_to_target(source_tx, target_tx, &source_chunk_name, &target_chunk_name)
-        .await?;
+    let until = if chunk.active_chunk {
+        Some(until)
+    } else {
+        None
+    };
+
+    copy_chunk_from_source_to_target(
+        source_tx,
+        target_tx,
+        &source_chunk_name,
+        &target_chunk_name,
+        until,
+    )
+    .await?;
     if trigger_dropped {
         create_invalidation_trigger(target_tx, &target_chunk_name).await?;
     }
+    Ok(())
+}
+
+async fn delete_data_until(
+    tx: &Transaction<'_>,
+    chunk_name: &str,
+    until: &DateTime<Utc>,
+) -> Result<()> {
+    debug!("Deleting rows from chunk {chunk_name} until {until}");
+    let rows = tx
+        .execute(
+            // TODO: handle the case when the time dimension is not called `time`
+            &format!("DELETE FROM {chunk_name} WHERE time < $1"),
+            &[&until],
+        )
+        .await?;
+    debug!("deleted '{rows}' rows");
     Ok(())
 }
 
@@ -149,8 +184,14 @@ async fn copy_compressed_chunk_data(
         quote_ident(&chunk.chunk_name)
     );
 
-    copy_chunk_from_source_to_target(source_tx, target_tx, &source_chunk_name, &target_chunk_name)
-        .await
+    copy_chunk_from_source_to_target(
+        source_tx,
+        target_tx,
+        &source_chunk_name,
+        &target_chunk_name,
+        None,
+    )
+    .await
 }
 
 async fn copy_chunk_from_source_to_target(
@@ -158,9 +199,17 @@ async fn copy_chunk_from_source_to_target(
     target_tx: &Transaction<'_>,
     source_chunk_name: &str,
     target_chunk_name: &str,
+    until: Option<&DateTime<Utc>>,
 ) -> Result<()> {
-    let copy_out =
-        format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)");
+    let copy_out = until.map(|until| {
+        // Unfortunately we can't use binds in the statement to a COPY, so we
+        // must manually convert our DateTime to a timestamptz.
+        // TODO: handle the case when the time dimension is not called `time`
+        format!("COPY (SELECT * FROM ONLY {source_chunk_name} WHERE time < '{}'::timestamptz) TO STDOUT WITH (FORMAT BINARY)", until.to_rfc3339())
+    }).unwrap_or(
+        format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)")
+    );
+
     debug!("{copy_out}");
 
     let copy_in = format!("COPY {target_chunk_name} FROM STDIN WITH (FORMAT BINARY)");

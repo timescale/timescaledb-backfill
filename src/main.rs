@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
 
             for chunk in chunks {
                 debug!("copying chunk: {chunk:?}");
-                copy_chunk(&mut source, &mut target, chunk).await?;
+                copy_chunk(&mut source, &mut target, chunk, &args.until).await?;
             }
         }
         Command::Clean => {
