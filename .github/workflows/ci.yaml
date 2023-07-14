@@ -62,7 +62,7 @@ jobs:
       - name: Test
         # Restrict to unit tests only. 
         # The integration suite runs against a docker image.
-        run: cargo test --bins
+        run: cargo test --bins && cargo test -p test-common
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.
   ci-result:

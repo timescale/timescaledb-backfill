@@ -1,8 +1,11 @@
 use anyhow::{Context, Result};
+use assert_cmd::cargo::CargoError;
 use assert_cmd::prelude::*;
+use std::env;
+use std::ffi::OsString;
 use std::process::{Command, Output, Stdio};
 
-use log::debug;
+use log::{debug, trace};
 use std::fmt::{Display, Formatter};
 use testcontainers::core::WaitFor;
 use testcontainers::images::generic::GenericImage;
@@ -45,6 +48,7 @@ impl Display for PgVersion {
 }
 
 pub const TIMESCALEDB_IMAGE: &str = "timescale/timescaledb-ha";
+const PSQL_IMAGE: &str = "postgres:15";
 
 /// Prepares a testcontainer image object for a given version of PostgreSQL
 pub fn postgres(version: PgVersion) -> GenericImage {
@@ -68,9 +72,7 @@ pub fn generic_postgres(name: &str, tag: &str) -> GenericImage {
         ))
 }
 
-/// Runs backfill with the specified test configuration [`TestConfig`]
-/// waits for it to finish and returns its [`std::process::Output`].
-pub fn run_backfill(config: TestConfig, action: &str) -> Result<Output> {
+pub fn run_backfill_(config: TestConfig, action: &str) -> Result<Output> {
     debug!("running backfill");
     let child = Command::cargo_bin("timescaledb-backfill")?
         .arg(action)
@@ -79,6 +81,65 @@ pub fn run_backfill(config: TestConfig, action: &str) -> Result<Output> {
         .expect("Couldn't launch timescaledb-backfill");
 
     child.wait_with_output().context("backfill process failed")
+}
+
+/// Runs backfill with the specified test configuration [`TestConfig`]
+/// waits for it to finish and returns its [`std::process::Output`].
+///
+/// The timescaledb-backfill process could be either run as a regular child
+/// process or, if `USE_DOCKER` environment variable is set to `true`,
+/// as a docker container. In the latter case `DOCKER_IMAGE` determines
+/// the docker image that will be used.
+/// (The default is `timescale/timescaledb-backfill:edge`)
+///
+/// If `DOCKER_PLATFORM` is set its value will be passed to the docker
+/// command as `--platform=<value>`
+pub fn run_backfill(config: TestConfig, action: &str) -> std::io::Result<Output> {
+    backfill_cmd(action, config.args().to_vec())
+        .expect("Couldn't build a Command to launch backfill")
+        .spawn()
+        .expect("Couldn't launch backfill")
+        .wait_with_output()
+}
+
+fn use_docker() -> bool {
+    env::var("USE_DOCKER")
+        .map(|val| val.to_ascii_lowercase() == "true")
+        .unwrap_or(false)
+}
+
+fn use_psql_docker() -> bool {
+    env::var("PSQL_DOCKER")
+        .map(|val| val.to_ascii_lowercase() == "true")
+        .unwrap_or_else(|_| use_docker())
+}
+
+fn backfill_cmd(action: &str, args: Vec<OsString>) -> Result<Command, CargoError> {
+    if use_docker() {
+        let backfill_image = env::var("DOCKER_IMAGE")
+            .unwrap_or_else(|_| "timescale/timescaledb-backfill:edge".into());
+
+        let mut cmd = Command::new("docker");
+        cmd.args([
+            "run",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "--rm",
+            "-i",
+        ]);
+
+        if let Some(image_platform) = env::var("DOCKER_PLATFORM").ok().filter(|p| !p.is_empty()) {
+            cmd.args(["--platform", &image_platform]);
+        }
+
+        cmd.arg(backfill_image).arg(action).args(args);
+
+        Ok(cmd)
+    } else {
+        let mut cmd = Command::cargo_bin("timescaledb-backfill")?;
+        cmd.arg(action).args(args);
+        Ok(cmd)
+    }
 }
 
 pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Result<()> {

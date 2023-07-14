@@ -17,8 +17,8 @@ impl TestConfig {
         until: DateTime<Utc>,
     ) -> Self {
         Self {
-            source: source.connection_string(),
-            target: target.connection_string(),
+            source: source.connection_string().for_backfill(),
+            target: target.connection_string().for_backfill(),
             parallelism: 8,
             until,
         }

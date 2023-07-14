@@ -68,7 +68,7 @@ impl TestConnectionString {
         ];
         let formatted = components
             .into_iter()
-            .map(|f| f.unwrap_or("".into()) + " ")
+            .map(|f| f.unwrap_or_else(|| "".into()) + " ")
             .collect();
         Self {
             internal,
@@ -104,6 +104,30 @@ impl TestConnectionString {
     pub fn user(&self, user: &str) -> Self {
         Self::build(TestConnectionParts {
             user: Some(user.into()),
+            ..self.internal.clone()
+        })
+    }
+
+    pub fn for_backfill(&self) -> Self {
+        let host = if use_docker() && self.is_localhost() {
+            Some("host.docker.internal".to_string())
+        } else {
+            self.internal.host.clone()
+        };
+        Self::build(TestConnectionParts {
+            host,
+            ..self.internal.clone()
+        })
+    }
+
+    pub fn for_psql(&self) -> Self {
+        let host = if use_psql_docker() && self.is_localhost() {
+            Some("host.docker.internal".to_string())
+        } else {
+            self.internal.host.clone()
+        };
+        Self::build(TestConnectionParts {
+            host,
             ..self.internal.clone()
         })
     }

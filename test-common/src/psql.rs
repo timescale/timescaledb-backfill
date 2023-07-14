@@ -45,14 +45,37 @@ pub fn psql<C: HasConnectionString, S: AsRef<OsStr>, I: IntoIterator<Item = Psql
         })
         .collect::<Vec<&str>>();
 
-    let mut base_cmd = Command::new("psql");
+    let mut base_cmd = if use_psql_docker() {
+        let cwd = format!(
+            "{}:/media",
+            env::current_dir()?.into_os_string().to_string_lossy()
+        );
+        let mut cmd = Command::new("docker");
+        cmd.args([
+            "run",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "-v",
+            cwd.as_str(),
+            "-w",
+            "/media",
+            "--rm",
+            "-i",
+        ])
+        .arg(PSQL_IMAGE)
+        .arg("psql");
+
+        cmd
+    } else {
+        Command::new("psql")
+    };
 
     let output = base_cmd
         .arg("-AtXq")
         .arg("--set")
         .arg("ON_ERROR_STOP=1")
         .arg("-d")
-        .arg(has_url.connection_string())
+        .arg(has_url.connection_string().for_psql())
         .args(input_args)
         .output()?;
 
