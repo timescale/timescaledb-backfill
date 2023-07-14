@@ -1,7 +1,8 @@
 use crate::connect::{Source, Target};
 use crate::execute::copy_chunk;
 use crate::logging::setup_logging;
-use crate::prepare::get_chunk_information;
+use crate::prepare::CompressionState::CompressedHypertable;
+use crate::prepare::{get_chunk_information, get_hypertable_information, Hypertable};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -61,6 +62,10 @@ async fn main() -> Result<()> {
             let mut source = Source::connect(&source_config).await?;
             let mut target = Target::connect(&target_config).await?;
 
+            let hypertables = get_hypertable_information(&mut source).await?;
+
+            abort_if_hypertable_setup_not_supported(&hypertables);
+
             let chunks = get_chunk_information(&mut source, &args.until).await?;
 
             for chunk in chunks {
@@ -74,4 +79,24 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn abort_if_hypertable_setup_not_supported(hypertables: &[Hypertable]) {
+    for hypertable in hypertables {
+        if hypertable.compression_state == CompressedHypertable {
+            // We don't care about the hypertable containing compressed data
+            continue;
+        }
+        if hypertable.dimensions.len() > 1 {
+            todo!("Cannot handle hypertables with multiple dimensions")
+        }
+        for dimension in &hypertable.dimensions {
+            if &dimension.column_type != "timestamp with time zone" {
+                todo!(
+                    "Cannot handle hypertables with non-timestamptz time column: {}",
+                    dimension.column_type
+                )
+            }
+        }
+    }
 }

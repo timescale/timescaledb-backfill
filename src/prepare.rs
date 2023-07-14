@@ -1,6 +1,10 @@
 use crate::connect::Source;
+use crate::prepare::CompressionState::{CompressedHypertable, CompressionOff, CompressionOn};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use multimap::MultiMap;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 
 static CHUNK_INFORMATION_QUERY: &str = r#"
     SELECT
@@ -18,6 +22,68 @@ static CHUNK_INFORMATION_QUERY: &str = r#"
     JOIN _timescaledb_catalog.hypertable h ON h.id = ch.hypertable_id
     WHERE _timescaledb_internal.to_timestamp(ds.range_start) < $1;
 "#;
+
+static HYPERTABLE_INFORMATION_QUERY: &str = r#"
+    SELECT
+        h.id as id
+      , h.schema_name as schema
+      , h.table_name as table
+      , h.compression_state as compression_state
+    FROM _timescaledb_catalog.hypertable h;
+"#;
+
+static HYPERTABLE_DIMENSION_QUERY: &str = r"
+    SELECT
+        d.hypertable_id as hypertable_id
+      , d.column_name as column_name
+      , d.column_type::text as column_type
+    FROM _timescaledb_catalog.dimension d;
+";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompressionState {
+    CompressionOff,
+    CompressionOn,
+    CompressedHypertable,
+}
+
+#[derive(Debug)]
+pub struct InvalidCompressionStatusError;
+
+impl Display for InvalidCompressionStatusError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+impl Error for InvalidCompressionStatusError {}
+
+impl TryFrom<i16> for CompressionState {
+    type Error = InvalidCompressionStatusError;
+
+    fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(CompressionOff),
+            1 => Ok(CompressionOn),
+            2 => Ok(CompressedHypertable),
+            _ => Err(InvalidCompressionStatusError),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Hypertable {
+    pub schema: String,
+    pub table: String,
+    pub dimensions: Vec<Dimension>,
+    pub compression_state: CompressionState,
+}
+
+#[derive(Debug)]
+pub struct Dimension {
+    pub column_name: String,
+    pub column_type: String,
+}
 
 #[derive(Debug)]
 pub struct Chunk {
@@ -51,4 +117,33 @@ pub async fn get_chunk_information(
             active_chunk: r.get("active_chunk"),
         })
         .collect())
+}
+
+pub async fn get_hypertable_information(source: &mut Source) -> Result<Vec<Hypertable>> {
+    let tx = source.transaction().await?;
+    let hypertable_rows = tx.query(HYPERTABLE_INFORMATION_QUERY, &[]).await?;
+    let dimension_rows = tx.query(HYPERTABLE_DIMENSION_QUERY, &[]).await?;
+    let mut hts = Vec::with_capacity(hypertable_rows.len());
+    let mut dimension_by_ht_id = MultiMap::new();
+    for dimension_row in dimension_rows {
+        let ht_id: i32 = dimension_row.get("hypertable_id");
+        let dimension = Dimension {
+            column_name: dimension_row.get("column_name"),
+            column_type: dimension_row.get("column_type"),
+        };
+        dimension_by_ht_id.insert(ht_id, dimension);
+    }
+    for hypertable_row in hypertable_rows {
+        let ht_id: i32 = hypertable_row.get("id");
+        let hypertable = Hypertable {
+            schema: hypertable_row.get("schema"),
+            table: hypertable_row.get("table"),
+            dimensions: dimension_by_ht_id.remove(&ht_id).unwrap_or_default(),
+            compression_state: CompressionState::try_from(
+                hypertable_row.get::<'_, _, i16>("compression_state"),
+            )?,
+        };
+        hts.push(hypertable);
+    }
+    Ok(hts)
 }
