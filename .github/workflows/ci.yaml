@@ -72,6 +72,7 @@ jobs:
           pg_dump --version
 
       - name: Test
+        # There's a  bug with parallelism where tests connect to the wrong container
         run: cargo test
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.

@@ -95,6 +95,11 @@ pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Res
 
     let pg_dump_stdout = pg_dump.stdout.unwrap();
 
+    psql(
+        &target,
+        PsqlInput::Sql("select public.timescaledb_pre_restore()"),
+    )?;
+
     let restore = Command::new("psql")
         .arg(target.connection_string().as_str())
         .stdin(Stdio::from(pg_dump_stdout))
@@ -102,5 +107,10 @@ pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Res
         .spawn()?;
 
     restore.wait_with_output()?;
+
+    psql(
+        &target,
+        PsqlInput::Sql("select public.timescaledb_post_restore()"),
+    )?;
     Ok(())
 }
