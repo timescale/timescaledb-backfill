@@ -1,11 +1,9 @@
 use anyhow::Result;
-
-use std::sync::Arc;
-
 use rustls::{
     client::{ServerCertVerified, ServerCertVerifier},
     ClientConfig,
 };
+use std::sync::Arc;
 use tokio_postgres::IsolationLevel::Serializable;
 use tokio_postgres::{config::SslMode, Client, Config, NoTls, SimpleQueryMessage, Transaction};
 use tokio_postgres_rustls::MakeRustlsConnect;

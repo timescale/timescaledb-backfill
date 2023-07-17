@@ -1,26 +1,45 @@
 use crate::connect::Source;
-use crate::prepare::CompressionState::{CompressedHypertable, CompressionOff, CompressionOn};
+use crate::timescale::{Chunk, CompressionState, Dimension, Hypertable};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use multimap::MultiMap;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
 
+// TODO: handle time dimensions other than timestamptz
 static CHUNK_INFORMATION_QUERY: &str = r#"
+WITH chunks AS (
     SELECT
-        h.schema_name as hypertable_schema
-        , h.table_name as hypertable_name
-        , ch.schema_name as chunk_schema
-        , ch.table_name as chunk_name
-        , ds.range_start as dimension_start
-        , ds.range_end as dimension_end
-        , _timescaledb_internal.to_timestamp(ds.range_start) < $1 AND _timescaledb_internal.to_timestamp(ds.range_end) > $1 as active_chunk
+        h.schema_name AS hypertable_schema,
+        h.table_name AS hypertable_name,
+        ch.schema_name AS chunk_schema,
+        ch.table_name AS chunk_name,
+        jsonb_agg(
+            jsonb_build_object(
+                'column_name',
+                di.column_name,
+                'column_type',
+                di.column_type,
+                'range_start',
+                ds.range_start,
+                'range_end',
+                ds.range_end
+            ) ORDER BY di.id -- Sort by ID because the lowest ID is the time dimension.
+        ) AS dimensions
     FROM
-         _timescaledb_catalog.chunk ch
+        _timescaledb_catalog.chunk ch
     JOIN _timescaledb_catalog.chunk_constraint cons ON cons.chunk_id = ch.id
     JOIN _timescaledb_catalog.dimension_slice ds ON ds.id = cons.dimension_slice_id
     JOIN _timescaledb_catalog.hypertable h ON h.id = ch.hypertable_id
-    WHERE _timescaledb_internal.to_timestamp(ds.range_start) < $1;
+    JOIN _timescaledb_catalog.dimension di ON h.id = di.hypertable_id AND di.id = ds.dimension_id
+    GROUP BY 1, 2, 3, 4
+)
+SELECT
+    *,
+    _timescaledb_internal.to_timestamp((dimensions->0->'range_start')::bigint)::timestamptz < $1
+        AND _timescaledb_internal.to_timestamp((dimensions->0->'range_end')::bigint)::timestamptz > $1 AS active_chunk
+FROM
+    chunks
+WHERE -- Dimensions are sorted by ID and the lowest ID is the time dimension.
+    _timescaledb_internal.to_timestamp((dimensions->0->'range_start')::bigint)::timestamptz < $1;
 "#;
 
 static HYPERTABLE_INFORMATION_QUERY: &str = r#"
@@ -40,62 +59,6 @@ static HYPERTABLE_DIMENSION_QUERY: &str = r"
     FROM _timescaledb_catalog.dimension d;
 ";
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum CompressionState {
-    CompressionOff,
-    CompressionOn,
-    CompressedHypertable,
-}
-
-#[derive(Debug)]
-pub struct InvalidCompressionStatusError;
-
-impl Display for InvalidCompressionStatusError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl Error for InvalidCompressionStatusError {}
-
-impl TryFrom<i16> for CompressionState {
-    type Error = InvalidCompressionStatusError;
-
-    fn try_from(value: i16) -> std::result::Result<Self, Self::Error> {
-        match value {
-            0 => Ok(CompressionOff),
-            1 => Ok(CompressionOn),
-            2 => Ok(CompressedHypertable),
-            _ => Err(InvalidCompressionStatusError),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct Hypertable {
-    pub schema: String,
-    pub table: String,
-    pub dimensions: Vec<Dimension>,
-    pub compression_state: CompressionState,
-}
-
-#[derive(Debug)]
-pub struct Dimension {
-    pub column_name: String,
-    pub column_type: String,
-}
-
-#[derive(Debug)]
-pub struct Chunk {
-    pub hypertable_schema: String,
-    pub hypertable_name: String,
-    pub chunk_schema: String,
-    pub chunk_name: String,
-    pub dimension_start: i64,
-    pub dimension_end: i64,
-    pub active_chunk: bool,
-}
-
 pub async fn get_chunk_information(
     source: &mut Source,
     until: &DateTime<Utc>,
@@ -105,18 +68,18 @@ pub async fn get_chunk_information(
         .await?
         .query(CHUNK_INFORMATION_QUERY, &[until])
         .await?;
-    Ok(rows
-        .iter()
-        .map(|r| Chunk {
-            hypertable_schema: r.get("hypertable_schema"),
-            hypertable_name: r.get("hypertable_name"),
-            chunk_schema: r.get("chunk_schema"),
-            chunk_name: r.get("chunk_name"),
-            dimension_start: r.get("dimension_start"),
-            dimension_end: r.get("dimension_end"),
-            active_chunk: r.get("active_chunk"),
+    rows.iter()
+        .map(|r| {
+            Ok(Chunk {
+                hypertable_schema: r.get("hypertable_schema"),
+                hypertable_name: r.get("hypertable_name"),
+                chunk_schema: r.get("chunk_schema"),
+                chunk_name: r.get("chunk_name"),
+                dimensions: serde_json::from_value(r.get("dimensions"))?,
+                active_chunk: r.get("active_chunk"),
+            })
         })
-        .collect())
+        .collect()
 }
 
 pub async fn get_hypertable_information(source: &mut Source) -> Result<Vec<Hypertable>> {

@@ -1,15 +1,12 @@
+use crate::connect::{Source, Target};
 use crate::execute::copy_chunk;
+use crate::timescale::Chunk;
 use anyhow::{Context, Result};
 use async_channel::Receiver;
 use chrono::{DateTime, Utc};
 use tokio::task::JoinSet;
 use tokio_postgres::Config;
 use tracing::{debug, trace};
-
-use crate::{
-    connect::{Source, Target},
-    prepare::Chunk,
-};
 
 /// Spawns asyncronous tasks (workers) that wait until a `Chunk` is
 /// passed via a `Receiver`, and copy the data of the `Chunk` from the source

@@ -21,6 +21,12 @@ static INSERT_DATA_FOR_MAY: &str = r"
     FROM generate_series('2023-05-01T00:00:00Z'::timestamptz, '2023-05-31T23:30:00Z'::timestamptz, '1 hour'::interval) time;
 ";
 
+static INSERT_DATA_FOR_JUNE: &str = r"
+    INSERT INTO metrics (time, device_id, val)
+    SELECT time, 1, random()
+    FROM generate_series('2023-06-01T00:00:00Z'::timestamptz, '2023-06-30T23:30:00Z'::timestamptz, '1 hour'::interval) time;
+";
+
 static ENABLE_HYPERTABLE_COMPRESSION: &str = r"
     ALTER TABLE metrics SET (timescaledb.compress, timescaledb.compress_orderby = 'time', timescaledb.compress_segmentby = 'device_id');
 ";
@@ -206,6 +212,25 @@ generate_tests!(
                             "continuous_aggs_hypertable_invalidation_log",
                             0,
                         );
+                }
+            }),
+        }
+    ),
+    (
+        copy_source_has_chunk_not_present_in_target,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_JUNE)],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 1464)
+                        .has_chunk_count("public", "metrics", 10);
                 }
             }),
         }
