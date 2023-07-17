@@ -1,7 +1,7 @@
 use crate::connect::Source;
 use crate::logging::setup_logging;
-use crate::prepare::CompressionState::CompressedHypertable;
-use crate::prepare::{get_chunk_information, get_hypertable_information, Hypertable};
+use crate::prepare::{get_chunk_information, get_hypertable_information};
+use crate::timescale::{CompressionState::CompressedHypertable, Hypertable};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -14,6 +14,7 @@ mod connect;
 mod execute;
 mod logging;
 mod prepare;
+mod timescale;
 mod work_items;
 mod workers;
 
@@ -108,9 +109,6 @@ fn abort_if_hypertable_setup_not_supported(hypertables: &[Hypertable]) {
         if hypertable.compression_state == CompressedHypertable {
             // We don't care about the hypertable containing compressed data
             continue;
-        }
-        if hypertable.dimensions.len() > 1 {
-            todo!("Cannot handle hypertables with multiple dimensions")
         }
         for dimension in &hypertable.dimensions {
             if &dimension.column_type != "timestamp with time zone" {

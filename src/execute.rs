@@ -1,6 +1,6 @@
 use crate::connect::{Source, Target};
-use crate::prepare::Chunk;
-use anyhow::Result;
+use crate::timescale::Chunk;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_lite::StreamExt;
@@ -8,7 +8,7 @@ use futures_util::pin_mut;
 use futures_util::SinkExt;
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, Transaction};
-use tracing::debug;
+use tracing::{debug, trace};
 
 pub async fn copy_chunk(
     source: &mut Source,
@@ -41,9 +41,8 @@ async fn copy_uncompressed_chunk_data(
 ) -> Result<()> {
     debug!("Copying uncompressed chunk");
     let target_chunk = match get_chunk_with_same_dimensions(target_tx, chunk).await? {
-        Some(chunk) => chunk,
-        // TODO: chunk creation
-        None => unimplemented!("create chunk with same dimensions"),
+        Some(target_chunk) => target_chunk,
+        None => create_uncompressed_chunk(target_tx, chunk).await?,
     };
 
     let source_chunk_name = format!(
@@ -288,47 +287,100 @@ async fn get_compressed_chunk(
     }))
 }
 
+/// Fetches a Chunk in the DB that matches the given Chunk's Hypertable and
+/// dimensions.
+///
+/// We can't rely on matching the Chunk's ID because there's no guarantee that
+/// the name or ID hasn't been assigned to a new Chunk with a different
+/// dimension range.
 async fn get_chunk_with_same_dimensions(
     tx: &Transaction<'_>,
     chunk: &Chunk,
 ) -> Result<Option<Chunk>> {
-    // TODO: match dimension names and ranges
     let row = tx
         .query_opt(
             r#"
-    SELECT
-          h.schema_name as hypertable_schema
-        , h.table_name as hypertable_name
-        , ch.schema_name as chunk_schema
-        , ch.table_name as chunk_name
-        , ds.range_start as dimension_start
-        , ds.range_end as dimension_end
-    FROM
-         _timescaledb_catalog.chunk ch
-    JOIN _timescaledb_catalog.chunk_constraint cons ON cons.chunk_id = ch.id
-    JOIN _timescaledb_catalog.dimension_slice ds ON ds.id = cons.dimension_slice_id
-    JOIN _timescaledb_catalog.hypertable h ON h.id = ch.hypertable_id
-    WHERE h.schema_name = $1
-      AND h.table_name = $2
-      AND ds.range_start = $3
-      AND ds.range_end = $4
-      ;
-    "#,
+with
+    chunk_dimensions as (
+        select
+            h.schema_name as hypertable_schema,
+            h.table_name as hypertable_name,
+            ch.schema_name as chunk_schema,
+            ch.table_name as chunk_name,
+            jsonb_agg(
+                jsonb_build_object(
+                    'column_name',
+                    di.column_name,
+                    'column_type',
+                    di.column_type,
+                    'range_start',
+                    ds.range_start,
+                    'range_end',
+                    ds.range_end
+                )
+                order by di.id
+            ) dimensions
+        from _timescaledb_catalog.chunk ch
+        join _timescaledb_catalog.chunk_constraint cons on cons.chunk_id = ch.id
+        join _timescaledb_catalog.dimension_slice ds on ds.id = cons.dimension_slice_id
+        join _timescaledb_catalog.hypertable h on h.id = ch.hypertable_id
+        join
+            _timescaledb_catalog.dimension di
+            on h.id = di.hypertable_id
+            and di.id = ds.dimension_id
+        where h.schema_name = $1 and h.table_name = $2
+        group by 1, 2, 3, 4
+    )
+select *
+from chunk_dimensions
+where dimensions = $3::TEXT::JSONB
+"#,
             &[
                 &chunk.hypertable_schema,
                 &chunk.hypertable_name,
-                &chunk.dimension_start,
-                &chunk.dimension_end,
+                &chunk.dimension_json()?,
             ],
         )
         .await?;
-    Ok(row.map(|r| Chunk {
-        hypertable_schema: r.get("hypertable_schema"),
-        hypertable_name: r.get("hypertable_name"),
-        chunk_schema: r.get("chunk_schema"),
-        chunk_name: r.get("chunk_name"),
-        dimension_start: r.get("dimension_start"),
-        dimension_end: r.get("dimension_end"),
-        active_chunk: false,
-    }))
+
+    trace!("chunk match {row:?}");
+    row.map_or(Ok(None), |r| {
+        Ok(Some(Chunk {
+            hypertable_schema: r.get("hypertable_schema"),
+            hypertable_name: r.get("hypertable_name"),
+            chunk_schema: r.get("chunk_schema"),
+            chunk_name: r.get("chunk_name"),
+            dimensions: serde_json::from_value(r.get("dimensions"))?,
+            active_chunk: false,
+        }))
+    })
+}
+
+/// Creates a Chunk in the same Hypertable and with the same slices as the
+/// given Chunk.
+async fn create_uncompressed_chunk(tx: &Transaction<'_>, chunk: &Chunk) -> Result<Chunk> {
+    trace!(
+        "creating uncompressed chunk from {:?} with slices {}",
+        chunk,
+        chunk.slices()?,
+    );
+
+    tx.execute(
+        r#"
+SELECT _timescaledb_internal.create_chunk(
+    $1::text::regclass,
+    slices => $2::TEXT::JSONB
+)
+"#,
+        &[
+            &format!("{}.{}", chunk.hypertable_schema, chunk.hypertable_name,),
+            &chunk.slices()?,
+        ],
+    )
+    .await?;
+
+    match get_chunk_with_same_dimensions(tx, chunk).await? {
+        Some(target_chunk) => Ok(target_chunk),
+        None => bail!("failed to create chunk in target"),
+    }
 }

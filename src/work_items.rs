@@ -1,4 +1,4 @@
-use crate::prepare::Chunk;
+use crate::timescale::Chunk;
 use anyhow::{Context, Result};
 use async_channel::{Receiver, Sender};
 use tracing::trace;
