@@ -6,12 +6,13 @@ use chrono::{DateTime, Utc};
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
+use once_cell::sync::OnceCell;
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, Transaction};
 use tracing::{debug, trace};
 
+static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
-const PG_NAME_DATA_LEN: usize = 64;
 
 pub async fn copy_chunk(
     source: &mut Source,
@@ -411,7 +412,7 @@ async fn create_compressed_chunk_data_table(
     chunk_schema: &str,
     chunk_name: &str,
 ) -> Result<CompressedChunk> {
-    let chunk_name = add_backfill_prefix(chunk_name);
+    let chunk_name = add_backfill_prefix(tx, chunk_name).await?;
     let data_table_name = quote_table_name(chunk_schema, &chunk_name);
     let parent_table_name = compressed_hypertable_name(
         tx,
@@ -445,14 +446,44 @@ async fn create_compressed_chunk_data_table(
 /// name is truncated by removing characters from the beginning instead of the
 /// end. This is done to preserve the chunk identifiers at the end of the table
 /// name, ensuring uniqueness.
-fn add_backfill_prefix(table_name: &str) -> String {
-    let table_name = if table_name.len() + COMPRESS_TABLE_NAME_PREFIX.len() >= PG_NAME_DATA_LEN {
+async fn add_backfill_prefix(tx: &Transaction<'_>, table_name: &str) -> Result<String> {
+    let table_name = if table_name.len() + COMPRESS_TABLE_NAME_PREFIX.len()
+        >= get_max_identifier_length(tx).await?
+    {
         &table_name[COMPRESS_TABLE_NAME_PREFIX.len()..]
     } else {
         table_name
     };
 
-    format!("bf_{}", table_name)
+    Ok(format!("bf_{}", table_name))
+}
+
+/// Returns the max identifier length as set in the DB.
+///
+/// The value is cached in a `OnceCell`, ideally only one query to the DB will
+/// be made. Worst case scenario, concurrent access to the unitialized value
+/// would make it so that multiple queries for the setting are executed
+/// but the query is simple enough that it won't matter.
+///
+/// Ideally we should use `get_or_init` but that'd require an async
+/// clousure, and those are not supported yet. Another option is wrapping
+/// the closure that fetches the value in a `block_on`, but when that was tried
+/// the execution didn't resume.
+async fn get_max_identifier_length(tx: &Transaction<'_>) -> Result<usize> {
+    match MAX_IDENTIFIER_LENGTH.get() {
+        Some(length) => Ok(*length),
+        None => {
+            let l: i32 = tx
+                .query_one("select current_setting('max_identifier_length')::int", &[])
+                .await?
+                .get(0);
+            let length = l as usize;
+            // An error here means that the `OnceCell` was set by a concurrent
+            // operation. It's safe to ignore.
+            _ = MAX_IDENTIFIER_LENGTH.set(length);
+            Ok(length)
+        }
+    }
 }
 
 /// Returns the name of the compressed hypertable associated to the given
