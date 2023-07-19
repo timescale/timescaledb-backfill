@@ -1559,6 +1559,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "multimap",
+ "once_cell",
  "postgres",
  "pretty_env_logger 0.5.0",
  "rustls",
