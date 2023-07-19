@@ -235,4 +235,26 @@ generate_tests!(
             }),
         }
     ),
+    (
+        copy_source_has_compressed_chunk_not_present_in_target,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![PsqlInput::Sql(COMPRESS_ONE_CHUNK),],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5)
+                        .has_compressed_chunk_count("public", "metrics", 2);
+                }
+            }),
+        }
+    ),
 );
