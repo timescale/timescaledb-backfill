@@ -116,4 +116,51 @@ impl Chunk {
         }
         serde_json::to_string(&dimensions_json)
     }
+
+    pub fn quoted_name(&self) -> String {
+        quote_table_name(&self.chunk_schema, &self.chunk_name)
+    }
+}
+
+pub struct CompressedChunk {
+    pub chunk_schema: String,
+    pub chunk_name: String,
+}
+
+impl CompressedChunk {
+    pub fn quoted_name(&self) -> String {
+        quote_table_name(&self.chunk_schema, &self.chunk_name)
+    }
+}
+
+pub fn quote_table_name(schema_name: &str, table_name: &str) -> String {
+    format!("{}.{}", quote_ident(schema_name), quote_ident(table_name))
+}
+
+/// `quote_ident` quotes the given value as an identifier (table, schema) safely for use in a `simple_query` call.
+/// Implementation matches that of `quote_identifier` in ruleutils.c of the `PostgreSQL` code,
+/// with `quote_all_identifiers` = true.
+pub fn quote_ident(value: &str) -> String {
+    let mut result = String::with_capacity(value.len() + 4);
+    result.push('"');
+    for c in value.chars() {
+        if c == '"' {
+            result.push(c);
+        }
+        result.push(c);
+    }
+    result.push('"');
+    result
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompressionSize {
+    pub uncompressed_heap_size: i64,
+    pub uncompressed_toast_size: i64,
+    pub uncompressed_index_size: i64,
+    pub compressed_heap_size: i64,
+    pub compressed_toast_size: i64,
+    pub compressed_index_size: i64,
+    pub numrows_pre_compression: i64,
+    pub numrows_post_compression: i64,
 }
