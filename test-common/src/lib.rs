@@ -70,11 +70,13 @@ pub fn generic_postgres(name: &str, tag: &str) -> GenericImage {
 
 /// Runs backfill with the specified test configuration [`TestConfig`]
 /// waits for it to finish and returns its [`std::process::Output`].
-pub fn run_backfill(config: TestConfig, action: &str) -> Result<Output> {
+pub fn run_backfill(config: impl TestConfig) -> Result<Output> {
     debug!("running backfill");
     let child = Command::cargo_bin("timescaledb-backfill")?
-        .arg(action)
+        .arg(config.action())
         .args(config.args())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
         .spawn()
         .expect("Couldn't launch timescaledb-backfill");
 
