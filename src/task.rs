@@ -1,6 +1,6 @@
 use crate::connect::{Source, Target};
-use anyhow::Result;
-use tokio_postgres::Transaction;
+use anyhow::{bail, Result};
+use tokio_postgres::{Client, Config, GenericClient, Transaction};
 
 #[derive(Debug)]
 pub struct Hypertable {
@@ -94,22 +94,26 @@ pub async fn complete_copy_task(
     Ok(())
 }
 
-async fn init_schema(target: &mut Target) -> Result<()> {
-    static SCHEMA: &str = include_str!("schema.sql");
-    let tx = target.client.transaction().await?;
-    let row = tx
+async fn backfill_schema_exists<T>(client: &T) -> Result<bool>
+where
+    T: GenericClient,
+{
+    let row = client
         .query_one(
-            "select count(*) > 0 from pg_namespace where nspname = '__backfill'",
+            "select count(*) > 0 as schema_exists from pg_namespace where nspname = '__backfill'",
             &[],
         )
         .await?;
-    let schema_exists: bool = row.get(0);
-    if !schema_exists {
-        tx.execute(SCHEMA, &[]).await?;
-        tx.commit().await?;
-    } else {
-        tx.rollback().await?;
+    Ok(row.get("schema_exists"))
+}
+
+async fn init_schema(target: &mut Target) -> Result<()> {
+    let tx = target.client.transaction().await?;
+    if !backfill_schema_exists(&tx).await? {
+        static SCHEMA: &str = include_str!("schema.sql");
+        tx.simple_query(SCHEMA).await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -154,6 +158,7 @@ pub async fn load_queue(
             filter: row.get("filter"),
         };
 
+        // TODO: on conflict do nothing? Update? ON DO NOTHING return how many weren't updated
         target_tx
             .execute(
                 INSERT_SOURCE_CHUNKS,
@@ -173,5 +178,26 @@ pub async fn load_queue(
     }
     target_tx.commit().await?;
 
+    Ok(())
+}
+
+async fn are_tasks_pending(client: &Client) -> Result<bool> {
+    let pending_task_exist = client
+        .query_opt(
+            "select 1 from __backfill.task where worked is null limit 1",
+            &[],
+        )
+        .await?;
+    Ok(pending_task_exist.is_some())
+}
+
+pub async fn assert_staged_tasks(target_config: &Config) -> Result<()> {
+    let target = Target::connect(target_config).await?;
+    if !backfill_schema_exists(&target.client).await? {
+        bail!("administrative schema `__backfill` not found. Run the `stage` command once before running `copy`.");
+    }
+    if !are_tasks_pending(&target.client).await? {
+        bail!("there are no pending copy tasks. Use the `stage` command to add more.");
+    }
     Ok(())
 }
