@@ -1,6 +1,7 @@
 use anyhow::Result;
 use assert_cmd::prelude::*;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use predicates::prelude::*;
 use std::ffi::OsStr;
 use std::str::FromStr;
 use test_common::PgVersion::PG15;
@@ -90,18 +91,16 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         psql(&target_container, sql)?;
     }
 
-    let completion_time = DateTime::from_utc(
-        NaiveDateTime::from_str(test_case.completion_time).unwrap(),
-        Utc,
-    );
+    // TODO: run stage first
+    // let completion_time = DateTime::from_utc(
+    //     NaiveDateTime::from_str(test_case.completion_time).unwrap(),
+    //     Utc,
+    // );
 
-    run_backfill(
-        TestConfig::new(&source_container, &target_container, completion_time),
-        "copy",
-    )
-    .unwrap()
-    .assert()
-    .success();
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success();
 
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
         .unwrap()
@@ -258,3 +257,50 @@ generate_tests!(
         }
     ),
 );
+
+#[test]
+fn copy_without_stage_error() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(PG15));
+    let target_container = docker.run(timescaledb(PG15));
+
+    run_backfill(
+        TestConfigCopy::new(&source_container, &target_container),
+    )
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(predicate::str::contains(
+            "Error: administrative schema `__backfill` not found. Run the `stage` command once before running `copy`."
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn copy_without_available_tasks_error() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(PG15));
+    let target_container = docker.run(timescaledb(PG15));
+
+    run_backfill(TestConfigStage::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success();
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "there are no pending copy tasks. Use the `stage` command to add more.",
+        ));
+
+    Ok(())
+}
