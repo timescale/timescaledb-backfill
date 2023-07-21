@@ -1,80 +1,44 @@
 use crate::connect::{Source, Target};
-use anyhow::{bail, Result};
+use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
+use anyhow::{bail, Context, Result};
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
-
-#[derive(Debug)]
-pub struct Hypertable {
-    pub schema: String,
-    pub table: String,
-}
-
-#[derive(Debug)]
-pub struct Chunk {
-    pub schema: String,
-    pub table: String,
-}
-
-pub type SourceHypertable = Hypertable;
-pub type TargetHypertable = Hypertable;
-
-pub type SourceChunk = Chunk;
-pub type TargetChunk = Chunk;
 
 #[derive(Debug)]
 pub struct CopyTask {
     pub priority: i64,
-    pub source_hypertable: SourceHypertable,
     pub source_chunk: SourceChunk,
-    pub target_hypertable: TargetHypertable,
-    pub target_chunk: TargetChunk,
+    pub target_chunk: Option<TargetChunk>,
     pub filter: Option<String>,
     pub snapshot: Option<String>,
 }
 
-pub async fn claim_copy_task(target_tx: &mut Transaction<'_>) -> Result<Option<CopyTask>> {
+pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyTask>> {
     static CLAIM_COPY_TASK: &str = include_str!("claim_source_chunk.sql");
 
     let row = target_tx.query_opt(CLAIM_COPY_TASK, &[]).await?;
     match row {
         Some(row) => {
             let priority: i64 = row.get("priority");
-            let source_hypertable: SourceHypertable = SourceHypertable {
-                schema: row.get("hypertable_schema"),
-                table: row.get("hypertable_name"),
-            };
+
             let source_chunk: SourceChunk = SourceChunk {
                 schema: row.get("chunk_schema"),
                 table: row.get("chunk_name"),
-            };
-            let dimensions: String = row.get("dimensions");
-            let filter: Option<String> = row.get("filter");
-            let snapshot: Option<String> = row.get("snapshot");
-
-            static FIND_TARGET_CHUNK: &str = include_str!("find_target_chunk.sql");
-
-            let row = target_tx
-                .query_one(
-                    FIND_TARGET_CHUNK,
-                    &[
-                        &source_hypertable.schema,
-                        &source_hypertable.table,
-                        &dimensions,
-                    ],
-                )
-                .await?;
-
-            Ok(Some(CopyTask {
-                priority,
-                source_hypertable,
-                source_chunk,
-                target_hypertable: TargetHypertable {
+                hypertable: Hypertable {
                     schema: row.get("hypertable_schema"),
                     table: row.get("hypertable_name"),
                 },
-                target_chunk: TargetChunk {
-                    schema: row.get("chunk_schema"),
-                    table: row.get("chunk_name"),
-                },
+                dimensions: serde_json::from_value(row.get("dimensions"))?,
+            };
+            let filter: Option<String> = row.get("filter");
+            let snapshot: Option<String> = row.get("snapshot");
+
+            let target_chunk =
+                find_target_chunk_with_same_dimensions(target_tx, &source_chunk).await?;
+
+            Ok(Some(CopyTask {
+                priority,
+                source_chunk,
+                target_chunk,
                 filter,
                 snapshot,
             }))
@@ -83,10 +47,35 @@ pub async fn claim_copy_task(target_tx: &mut Transaction<'_>) -> Result<Option<C
     }
 }
 
-pub async fn complete_copy_task(
-    target_tx: &mut Transaction<'_>,
-    copy_task: &CopyTask,
-) -> Result<()> {
+pub async fn find_target_chunk_with_same_dimensions(
+    target_tx: &Transaction<'_>,
+    source_chunk: &SourceChunk,
+) -> Result<Option<TargetChunk>> {
+    static FIND_TARGET_CHUNK: &str = include_str!("find_target_chunk.sql");
+
+    let row = target_tx
+        .query_opt(
+            FIND_TARGET_CHUNK,
+            &[
+                &source_chunk.hypertable.schema,
+                &source_chunk.hypertable.table,
+                &serde_json::to_string(&source_chunk.dimensions)?,
+            ],
+        )
+        .await?;
+
+    Ok(row.map(|row| TargetChunk {
+        schema: row.get("chunk_schema"),
+        table: row.get("chunk_name"),
+        hypertable: Hypertable {
+            schema: row.get("hypertable_schema"),
+            table: row.get("hypertable_name"),
+        },
+        dimensions: source_chunk.dimensions.clone(),
+    }))
+}
+
+pub async fn complete_copy_task(target_tx: &Transaction<'_>, copy_task: &CopyTask) -> Result<()> {
     static COMPLETE_SOURCE_CHUNK: &str = include_str!("complete_source_chunk.sql");
     target_tx
         .execute(COMPLETE_SOURCE_CHUNK, &[&copy_task.priority])
@@ -126,51 +115,29 @@ pub async fn load_queue(
 ) -> Result<()> {
     init_schema(target).await?;
 
-    struct Item {
-        chunk_id: i64,
-        chunk_schema: String,
-        chunk_name: String,
-        hypertable_id: i64,
-        hypertable_schema: String,
-        hypertable_name: String,
-        dimensions: String,
-        filter: Option<String>,
-    }
-
+    let target_tx = target.client.transaction().await?;
     static FIND_SOURCE_CHUNKS: &str = include_str!("find_source_chunks.sql");
     let source_tx = source.transaction().await?;
     let rows = source_tx
         .query(FIND_SOURCE_CHUNKS, &[&table_filter, &until])
-        .await?;
+        // TODO: determine if the problem is with until or filter and show a better error.
+        // until error if it's a string - ERROR: invalid input syntax for type bigint: "hello"
+        // filter error if it's an invalid regex. Eg `filter=[(` - ERROR: invalid regular expression: brackets [] not balanced
+        .await.with_context(|| "failed to find hypertable/chunks in source. DB invalid errors might be related to the `until` and `filter` flags.")?;
 
     static INSERT_SOURCE_CHUNKS: &str = include_str!("insert_source_chunks.sql");
-    let target_tx = target.client.transaction().await?;
 
     for row in rows.iter() {
-        let item = Item {
-            chunk_id: row.get("chunk_id"),
-            chunk_schema: row.get("chunk_schema"),
-            chunk_name: row.get("chunk_name"),
-            hypertable_id: row.get("hypertable_id"),
-            hypertable_schema: row.get("hypertable_schema"),
-            hypertable_name: row.get("hypertable_name"),
-            dimensions: row.get("dimensions"),
-            filter: row.get("filter"),
-        };
-
-        // TODO: on conflict do nothing? Update? ON DO NOTHING return how many weren't updated
         target_tx
             .execute(
                 INSERT_SOURCE_CHUNKS,
                 &[
-                    &item.chunk_id,
-                    &item.chunk_schema,
-                    &item.chunk_name,
-                    &item.hypertable_id,
-                    &item.hypertable_schema,
-                    &item.hypertable_name,
-                    &item.dimensions,
-                    &item.filter,
+                    &row.get::<&str, String>("chunk_schema"),
+                    &row.get::<&str, String>("chunk_name"),
+                    &row.get::<&str, String>("hypertable_schema"),
+                    &row.get::<&str, String>("hypertable_name"),
+                    &row.get::<&str, String>("dimensions"),
+                    &row.get::<&str, Option<String>>("filter"),
                     &snapshot,
                 ],
             )

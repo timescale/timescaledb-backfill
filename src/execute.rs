@@ -1,8 +1,11 @@
-use crate::connect::{Source, Target};
-use crate::timescale::{quote_table_name, Chunk, CompressedChunk, CompressionSize};
-use anyhow::{bail, Result};
+use crate::sql::quote_table_name;
+use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
+use crate::timescale::{
+    Chunk, CompressedChunk, CompressionSize, SourceChunk, SourceCompressedChunk, TargetChunk,
+    TargetCompressedChunk,
+};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
@@ -14,52 +17,55 @@ use tracing::{debug, trace};
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
 
-pub async fn copy_chunk(
-    source: &mut Source,
-    target: &mut Target,
-    source_chunk: Chunk,
-    until: &DateTime<Utc>,
+pub async fn copy_chunk<'a>(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    task: &CopyTask,
 ) -> Result<()> {
-    let source_tx = source.transaction().await?;
-    let target_tx = target.client.transaction().await?;
-
-    let target_chunk = match get_chunk_with_same_dimensions(&target_tx, &source_chunk).await? {
-        Some(target_chunk) => target_chunk,
-        None => create_uncompressed_chunk(&target_tx, &source_chunk).await?,
+    let target_chunk = match task.target_chunk.as_ref() {
+        Some(target_chunk) => target_chunk.clone(),
+        None => create_uncompressed_chunk(target_tx, &task.source_chunk).await?,
     };
 
-    copy_uncompressed_chunk_data(&source_tx, &target_tx, &source_chunk, &target_chunk, until)
-        .await?;
+    copy_uncompressed_chunk_data(
+        source_tx,
+        target_tx,
+        &task.source_chunk,
+        &target_chunk,
+        &task.filter,
+    )
+    .await?;
 
-    if let Some(source_compressed_chunk) = get_compressed_chunk(&source_tx, &source_chunk).await? {
+    if let Some(source_compressed_chunk) =
+        get_compressed_chunk(source_tx, &task.source_chunk).await?
+    {
         if let Some(target_compressed_chunk) =
-            get_compressed_chunk(&target_tx, &target_chunk).await?
+            get_compressed_chunk(target_tx, &target_chunk).await?
         {
             copy_compressed_chunk_data(
-                &source_tx,
-                &target_tx,
+                source_tx,
+                target_tx,
                 &source_compressed_chunk,
                 &target_compressed_chunk,
             )
             .await?;
         } else {
             let target_compressed_chunk_data_table = create_compressed_chunk_data_table(
-                &target_tx,
+                target_tx,
                 &target_chunk,
-                &source_compressed_chunk.chunk_schema,
-                &source_compressed_chunk.chunk_name,
+                &source_compressed_chunk,
             )
             .await?;
             copy_compressed_chunk_data(
-                &source_tx,
-                &target_tx,
+                source_tx,
+                target_tx,
                 &source_compressed_chunk,
                 &target_compressed_chunk_data_table,
             )
             .await?;
             create_compressed_chunk_from_data_table(
-                &source_tx,
-                &target_tx,
+                source_tx,
+                target_tx,
                 &source_compressed_chunk,
                 &target_chunk,
                 &target_compressed_chunk_data_table,
@@ -67,41 +73,32 @@ pub async fn copy_chunk(
             .await?;
         };
     }
-
-    target_tx.commit().await?;
-    source_tx.commit().await?;
     Ok(())
 }
 
 async fn copy_uncompressed_chunk_data(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
-    source_chunk: &Chunk,
-    target_chunk: &Chunk,
-    until: &DateTime<Utc>,
+    source_chunk: &SourceChunk,
+    target_chunk: &TargetChunk,
+    filter: &Option<String>,
 ) -> Result<()> {
     debug!("Copying uncompressed chunk");
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
-    if !target_chunk.active_chunk {
+    if let Some(filter) = filter {
+        delete_data_using_filter(target_tx, target_chunk, filter).await?;
+    } else {
         delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
-    } else {
-        delete_data_until(target_tx, &target_chunk.quoted_name(), until).await?;
     }
-
-    let until = if target_chunk.active_chunk {
-        Some(until)
-    } else {
-        None
-    };
 
     copy_chunk_from_source_to_target(
         source_tx,
         target_tx,
         &source_chunk.quoted_name(),
         &target_chunk.quoted_name(),
-        until,
+        filter,
     )
     .await?;
 
@@ -111,18 +108,15 @@ async fn copy_uncompressed_chunk_data(
     Ok(())
 }
 
-async fn delete_data_until(
+async fn delete_data_using_filter(
     tx: &Transaction<'_>,
-    chunk_name: &str,
-    until: &DateTime<Utc>,
+    chunk: &TargetChunk,
+    filter: &str,
 ) -> Result<()> {
-    debug!("Deleting rows from chunk {chunk_name} until {until}");
+    let chunk_name = chunk.quoted_name();
+    debug!("Deleting rows from chunk {chunk_name} with filter {filter}");
     let rows = tx
-        .execute(
-            // TODO: handle the case when the time dimension is not called `time`
-            &format!("DELETE FROM {chunk_name} WHERE time < $1"),
-            &[&until],
-        )
+        .execute(&format!("DELETE FROM {chunk_name} WHERE {filter}"), &[])
         .await?;
     debug!("deleted '{rows}' rows");
     Ok(())
@@ -210,7 +204,7 @@ async fn copy_compressed_chunk_data(
         target_tx,
         &source_chunk.quoted_name(),
         &target_chunk.quoted_name(),
-        None,
+        &None,
     )
     .await?;
 
@@ -226,13 +220,10 @@ async fn copy_chunk_from_source_to_target(
     target_tx: &Transaction<'_>,
     source_chunk_name: &str,
     target_chunk_name: &str,
-    until: Option<&DateTime<Utc>>,
+    filter: &Option<String>,
 ) -> Result<()> {
-    let copy_out = until.map(|until| {
-        // Unfortunately we can't use binds in the statement to a COPY, so we
-        // must manually convert our DateTime to a timestamptz.
-        // TODO: handle the case when the time dimension is not called `time`
-        format!("COPY (SELECT * FROM ONLY {source_chunk_name} WHERE time < '{}'::timestamptz) TO STDOUT WITH (FORMAT BINARY)", until.to_rfc3339())
+    let copy_out = filter.as_ref().map(|filter| {
+        format!("COPY (SELECT * FROM ONLY {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT BINARY)")
     }).unwrap_or(
         format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)")
     );
@@ -271,7 +262,7 @@ async fn copy_chunk_from_source_to_target(
 async fn get_compressed_chunk(
     source_tx: &Transaction<'_>,
     chunk: &Chunk,
-) -> Result<Option<CompressedChunk>> {
+) -> Result<Option<SourceCompressedChunk>> {
     let row = source_tx
         .query_opt(
             r#"
@@ -283,91 +274,25 @@ async fn get_compressed_chunk(
     WHERE ch.schema_name = $1
       AND ch.table_name = $2
     "#,
-            &[&chunk.chunk_schema, &chunk.chunk_name],
+            &[&chunk.schema, &chunk.table],
         )
         .await?;
-    Ok(row.map(|r| CompressedChunk {
-        chunk_schema: r.get("schema_name"),
-        chunk_name: r.get("table_name"),
+    Ok(row.map(|r| SourceCompressedChunk {
+        schema: r.get("schema_name"),
+        table: r.get("table_name"),
     }))
-}
-
-/// Fetches a Chunk in the DB that matches the given Chunk's Hypertable and
-/// dimensions.
-///
-/// We can't rely on matching the Chunk's ID because there's no guarantee that
-/// the name or ID hasn't been assigned to a new Chunk with a different
-/// dimension range.
-async fn get_chunk_with_same_dimensions(
-    tx: &Transaction<'_>,
-    chunk: &Chunk,
-) -> Result<Option<Chunk>> {
-    let row = tx
-        .query_opt(
-            r#"
-with
-    chunk_dimensions as (
-        select
-            h.schema_name as hypertable_schema,
-            h.table_name as hypertable_name,
-            ch.schema_name as chunk_schema,
-            ch.table_name as chunk_name,
-            jsonb_agg(
-                jsonb_build_object(
-                    'column_name',
-                    di.column_name,
-                    'column_type',
-                    di.column_type,
-                    'range_start',
-                    ds.range_start,
-                    'range_end',
-                    ds.range_end
-                )
-                order by di.id
-            ) dimensions
-        from _timescaledb_catalog.chunk ch
-        join _timescaledb_catalog.chunk_constraint cons on cons.chunk_id = ch.id
-        join _timescaledb_catalog.dimension_slice ds on ds.id = cons.dimension_slice_id
-        join _timescaledb_catalog.hypertable h on h.id = ch.hypertable_id
-        join
-            _timescaledb_catalog.dimension di
-            on h.id = di.hypertable_id
-            and di.id = ds.dimension_id
-        where h.schema_name = $1 and h.table_name = $2
-        group by 1, 2, 3, 4
-    )
-select *
-from chunk_dimensions
-where dimensions = $3::TEXT::JSONB
-"#,
-            &[
-                &chunk.hypertable_schema,
-                &chunk.hypertable_name,
-                &chunk.dimension_json()?,
-            ],
-        )
-        .await?;
-
-    trace!("chunk match {row:?}");
-    row.map_or(Ok(None), |r| {
-        Ok(Some(Chunk {
-            hypertable_schema: r.get("hypertable_schema"),
-            hypertable_name: r.get("hypertable_name"),
-            chunk_schema: r.get("chunk_schema"),
-            chunk_name: r.get("chunk_name"),
-            dimensions: serde_json::from_value(r.get("dimensions"))?,
-            active_chunk: false,
-        }))
-    })
 }
 
 /// Creates a Chunk in the same Hypertable and with the same slices as the
 /// given Chunk.
-async fn create_uncompressed_chunk(tx: &Transaction<'_>, chunk: &Chunk) -> Result<Chunk> {
+async fn create_uncompressed_chunk(
+    tx: &Transaction<'_>,
+    source_chunk: &SourceChunk,
+) -> Result<TargetChunk> {
     trace!(
         "creating uncompressed chunk from {:?} with slices {}",
-        chunk,
-        chunk.slices()?,
+        source_chunk,
+        source_chunk.slices()?,
     );
 
     tx.execute(
@@ -378,16 +303,18 @@ SELECT _timescaledb_internal.create_chunk(
 )
 "#,
         &[
-            &format!("{}.{}", chunk.hypertable_schema, chunk.hypertable_name),
-            &chunk.slices()?,
+            &quote_table_name(
+                &source_chunk.hypertable.schema,
+                &source_chunk.hypertable.table,
+            ),
+            &source_chunk.slices()?,
         ],
     )
     .await?;
 
-    match get_chunk_with_same_dimensions(tx, chunk).await? {
-        Some(target_chunk) => Ok(target_chunk),
-        None => bail!("failed to create chunk in target"),
-    }
+    find_target_chunk_with_same_dimensions(tx, source_chunk)
+        .await?
+        .ok_or_else(|| anyhow!("couldn't retrieve recently created chunk"))
 }
 
 /// Creates a compressed chunk data table. The table is created in the given
@@ -408,16 +335,15 @@ SELECT _timescaledb_internal.create_chunk(
 /// sequence used for the catalog's IDs.
 async fn create_compressed_chunk_data_table(
     tx: &Transaction<'_>,
-    uncompressed_chunk: &Chunk,
-    chunk_schema: &str,
-    chunk_name: &str,
-) -> Result<CompressedChunk> {
-    let chunk_name = add_backfill_prefix(tx, chunk_name).await?;
-    let data_table_name = quote_table_name(chunk_schema, &chunk_name);
+    uncompressed_chunk: &TargetChunk,
+    source_compressed_chunk: &SourceCompressedChunk,
+) -> Result<TargetCompressedChunk> {
+    let table = add_backfill_prefix(tx, &source_compressed_chunk.table).await?;
+    let data_table_name = quote_table_name(&source_compressed_chunk.schema, &table);
     let parent_table_name = compressed_hypertable_name(
         tx,
-        &uncompressed_chunk.hypertable_schema,
-        &uncompressed_chunk.hypertable_name,
+        &uncompressed_chunk.hypertable.schema,
+        &uncompressed_chunk.hypertable.table,
     )
     .await?;
 
@@ -434,9 +360,9 @@ async fn create_compressed_chunk_data_table(
 
     tx.execute(&query, &[]).await?;
 
-    Ok(CompressedChunk {
-        chunk_schema: chunk_schema.into(),
-        chunk_name,
+    Ok(TargetCompressedChunk {
+        schema: source_compressed_chunk.schema.clone(),
+        table,
     })
 }
 
@@ -529,9 +455,9 @@ WHERE
 async fn create_compressed_chunk_from_data_table(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
-    source_compressed_chunk: &CompressedChunk,
-    target_chunk: &Chunk,
-    target_data_table: &CompressedChunk,
+    source_compressed_chunk: &SourceCompressedChunk,
+    target_chunk: &TargetChunk,
+    target_data_table: &TargetCompressedChunk,
 ) -> Result<()> {
     let compression_size = fetch_compression_size(source_tx, source_compressed_chunk).await?;
 
@@ -564,7 +490,7 @@ SELECT _timescaledb_internal.create_compressed_chunk(
 /// Fetches the compression size of the given `CompressedChunk`
 async fn fetch_compression_size(
     tx: &Transaction<'_>,
-    compressed_chunk: &CompressedChunk,
+    compressed_chunk: &SourceCompressedChunk,
 ) -> Result<CompressionSize> {
     let row = tx
         .query_one(
@@ -582,7 +508,7 @@ FROM _timescaledb_catalog.compression_chunk_size s
 JOIN _timescaledb_catalog.chunk c ON c.id = s.compressed_chunk_id
 WHERE c.schema_name = $1 AND c.table_name = $2
         "#,
-            &[&compressed_chunk.chunk_schema, &compressed_chunk.chunk_name],
+            &[&compressed_chunk.schema, &compressed_chunk.table],
         )
         .await?;
 
