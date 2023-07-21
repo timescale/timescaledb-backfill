@@ -1,9 +1,7 @@
 use anyhow::Result;
 use assert_cmd::prelude::*;
-use chrono::{DateTime, NaiveDateTime, Utc};
 use predicates::prelude::*;
 use std::ffi::OsStr;
-use std::str::FromStr;
 use test_common::PgVersion::PG15;
 use test_common::*;
 use testcontainers::clients::Cli;
@@ -91,11 +89,18 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         psql(&target_container, sql)?;
     }
 
-    // TODO: run stage first
-    // let completion_time = DateTime::from_utc(
-    //     NaiveDateTime::from_str(test_case.completion_time).unwrap(),
-    //     Utc,
-    // );
+    psql(
+        &source_container,
+        PsqlInput::Sql("SET log_error_verbosity = verbose;"),
+    )?;
+
+    run_backfill(
+        TestConfigStage::new(&source_container, &target_container)
+            .with_completion_time(test_case.completion_time),
+    )
+    .unwrap()
+    .assert()
+    .success();
 
     run_backfill(TestConfigCopy::new(&source_container, &target_container))
         .unwrap()

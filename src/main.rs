@@ -1,6 +1,5 @@
 use crate::connect::{Source, Target};
 use crate::logging::setup_logging;
-use crate::timescale::{CompressionState::CompressedHypertable, Hypertable};
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::str::FromStr;
@@ -10,10 +9,9 @@ use tracing::debug;
 mod connect;
 mod execute;
 mod logging;
-mod prepare;
+mod sql;
 mod task;
 mod timescale;
-mod work_items;
 mod workers;
 
 #[derive(Parser, Debug)]
@@ -90,19 +88,17 @@ async fn main() -> Result<()> {
                 args.until,
                 args.snapshot,
             )
-            .await?;
+            .await?
         }
         Command::Copy(args) => {
+            let source_config = Config::from_str(&args.source)?;
             let target_config = Config::from_str(&args.target)?;
-            task::assert_staged_tasks(&target_config).await?
-            // TODO: run the workers
-            //
-            // let source_config = Config::from_str(&args.source)?;
-            // let mut source = Source::connect(&source_config).await?;
-            // let mut pool =
-            //     workers::Pool::new(args.parallelism.into(), &source_config, &target_config).await;
-            //
-            // pool.join().await.with_context(|| "worker pool error")?
+            task::assert_staged_tasks(&target_config).await?;
+
+            let mut pool =
+                workers::Pool::new(args.parallelism.into(), &source_config, &target_config).await;
+
+            pool.join().await.with_context(|| "worker pool error")?
         }
         Command::Clean => {
             todo!()
