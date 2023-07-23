@@ -168,3 +168,12 @@ pub async fn assert_staged_tasks(target_config: &Config) -> Result<()> {
     }
     Ok(())
 }
+
+pub async fn clean(target_config: &Config) -> Result<()> {
+    let target = Target::connect(target_config).await?;
+    target
+        .client
+        .execute("drop schema __backfill cascade", &[])
+        .await?;
+    Ok(())
+}

@@ -7,6 +7,32 @@ pub trait TestConfig {
 }
 
 #[derive(Default, Clone)]
+pub struct TestConfigClean {
+    target: TestConnectionString,
+}
+
+impl TestConfigClean {
+    pub fn new<T: HasConnectionString>(target: &'_ T) -> Self {
+        Self {
+            target: target.connection_string(),
+        }
+    }
+}
+
+impl TestConfig for TestConfigClean {
+    fn args(&self) -> Vec<OsString> {
+        vec![
+            OsString::from("--target"),
+            OsString::from(self.target.as_str()),
+        ]
+    }
+
+    fn action(&self) -> &str {
+        "clean"
+    }
+}
+
+#[derive(Default, Clone)]
 pub struct TestConfigCopy {
     source: TestConnectionString,
     target: TestConnectionString,

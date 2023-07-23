@@ -53,10 +53,17 @@ pub struct CopyConfig {
 }
 
 #[derive(Parser, Debug)]
+pub struct CleanConfig {
+    /// Connection string to the target database
+    #[arg(long)]
+    target: String,
+}
+
+#[derive(Parser, Debug)]
 pub enum Command {
     Stage(StageConfig),
     Copy(CopyConfig),
-    Clean,
+    Clean(CleanConfig),
 }
 
 #[derive(Parser, Debug)]
@@ -88,7 +95,7 @@ async fn main() -> Result<()> {
                 args.until,
                 args.snapshot,
             )
-            .await?
+            .await
         }
         Command::Copy(args) => {
             let source_config = Config::from_str(&args.source)?;
@@ -98,12 +105,11 @@ async fn main() -> Result<()> {
             let mut pool =
                 workers::Pool::new(args.parallelism.into(), &source_config, &target_config).await;
 
-            pool.join().await.with_context(|| "worker pool error")?
+            pool.join().await.with_context(|| "worker pool error")
         }
-        Command::Clean => {
-            todo!()
+        Command::Clean(args) => {
+            let target_config = Config::from_str(&args.target)?;
+            task::clean(&target_config).await
         }
     }
-
-    Ok(())
 }
