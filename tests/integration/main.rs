@@ -89,11 +89,6 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         psql(&target_container, sql)?;
     }
 
-    psql(
-        &source_container,
-        PsqlInput::Sql("SET log_error_verbosity = verbose;"),
-    )?;
-
     run_backfill(
         TestConfigStage::new(&source_container, &target_container)
             .with_completion_time(test_case.completion_time),
@@ -306,6 +301,40 @@ fn copy_without_available_tasks_error() -> Result<()> {
         .stderr(predicate::str::contains(
             "there are no pending copy tasks. Use the `stage` command to add more.",
         ));
+
+    Ok(())
+}
+
+#[test]
+fn clean_removes_schema() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(PG15));
+    let target_container = docker.run(timescaledb(PG15));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+
+    run_backfill(TestConfigStage::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success();
+
+    DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target")
+        .has_schema("__backfill");
+
+    run_backfill(TestConfigClean::new(&target_container))
+        .unwrap()
+        .assert()
+        .success();
+
+    DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target")
+        .not_has_schema("__backfill");
 
     Ok(())
 }
