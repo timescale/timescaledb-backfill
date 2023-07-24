@@ -17,7 +17,7 @@ use tracing::{debug, trace};
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
 
-pub async fn copy_chunk<'a>(
+pub async fn copy_chunk(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
     task: &CopyTask,
