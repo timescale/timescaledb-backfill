@@ -24,9 +24,9 @@ pub struct StageConfig {
     #[arg(long)]
     target: String,
 
-    // Posix regular expression used to match `schema.table` for hypertables
-    #[arg(short, long)]
-    filter: Option<String>,
+    /// Posix regular expression used to match `schema.table` for hypertables
+    #[arg(short, long = "filter")]
+    table_filter: Option<String>,
 
     /// The completion point to copy chunk data until
     #[arg(short, long)]
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
             task::load_queue(
                 &mut source,
                 &mut target,
-                args.filter,
+                args.table_filter,
                 args.until,
                 args.snapshot,
             )
