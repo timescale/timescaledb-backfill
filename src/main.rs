@@ -1,8 +1,12 @@
 use crate::connect::{Source, Target};
 use crate::logging::setup_logging;
+use crate::workers::PROCESSED_COUNT;
 use anyhow::{Context, Result};
 use clap::Parser;
+use human_repr::HumanDuration;
 use std::str::FromStr;
+use std::sync::atomic::Ordering::Relaxed;
+use tokio::time::Instant;
 use tokio_postgres::Config;
 use tracing::debug;
 
@@ -98,18 +102,36 @@ async fn main() -> Result<()> {
             .await
         }
         Command::Copy(args) => {
+            let start = Instant::now();
             let source_config = Config::from_str(&args.source)?;
             let target_config = Config::from_str(&args.target)?;
-            task::assert_staged_tasks(&target_config).await?;
 
-            let mut pool =
-                workers::Pool::new(args.parallelism.into(), &source_config, &target_config).await;
+            let task_count =
+                task::get_and_assert_staged_task_count_greater_zero(&target_config).await?;
 
-            pool.join().await.with_context(|| "worker pool error")
+            println!("Preparing to copy {task_count} chunks");
+
+            let mut pool = workers::Pool::new(
+                args.parallelism.into(),
+                &source_config,
+                &target_config,
+                task_count,
+            )
+            .await;
+
+            pool.join().await.with_context(|| "worker pool error")?;
+            println!(
+                "Copied {} chunks in {}",
+                PROCESSED_COUNT.load(Relaxed),
+                start.elapsed().human_duration()
+            );
+            Ok(())
         }
         Command::Clean(args) => {
             let target_config = Config::from_str(&args.target)?;
-            task::clean(&target_config).await
+            task::clean(&target_config).await?;
+            println!("Cleaned target");
+            Ok(())
         }
     }
 }

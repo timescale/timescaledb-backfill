@@ -83,7 +83,7 @@ async fn copy_uncompressed_chunk_data(
     target_chunk: &TargetChunk,
     filter: &Option<String>,
 ) -> Result<()> {
-    debug!("Copying uncompressed chunk");
+    debug!("Copying uncompressed chunk {}", source_chunk.quoted_name());
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
@@ -105,6 +105,10 @@ async fn copy_uncompressed_chunk_data(
     if trigger_dropped {
         create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
     }
+    debug!(
+        "Finished copying uncompressed chunk {}",
+        source_chunk.quoted_name()
+    );
     Ok(())
 }
 
@@ -196,7 +200,7 @@ async fn copy_compressed_chunk_data(
     source_chunk: &CompressedChunk,
     target_chunk: &CompressedChunk,
 ) -> Result<()> {
-    debug!("Copying compressed chunk");
+    debug!("Copying compressed chunk {}", source_chunk.quoted_name());
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
@@ -213,6 +217,10 @@ async fn copy_compressed_chunk_data(
         create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
     }
 
+    debug!(
+        "Finished copying compressed chunk {}",
+        source_chunk.quoted_name()
+    );
     Ok(())
 }
 

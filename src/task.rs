@@ -127,6 +127,8 @@ pub async fn load_queue(
 
     static INSERT_SOURCE_CHUNKS: &str = include_str!("insert_source_chunks.sql");
 
+    let row_count = rows.len();
+
     for row in rows.iter() {
         target_tx
             .execute(
@@ -145,28 +147,32 @@ pub async fn load_queue(
     }
     target_tx.commit().await?;
 
+    println!("Staged {row_count} chunks to copy");
+
     Ok(())
 }
 
-async fn are_tasks_pending(client: &Client) -> Result<bool> {
-    let pending_task_exist = client
-        .query_opt(
-            "select 1 from __backfill.task where worked is null limit 1",
+async fn get_pending_task_count(client: &Client) -> Result<u64> {
+    let pending_task_count = client
+        .query_one(
+            "select count(*) from __backfill.task where worked is null",
             &[],
         )
         .await?;
-    Ok(pending_task_exist.is_some())
+    // NOTE: count(*) in postgres returns int8, which is an i64, but it will never be negative
+    Ok(pending_task_count.get::<'_, _, i64>(0) as u64)
 }
 
-pub async fn assert_staged_tasks(target_config: &Config) -> Result<()> {
+pub async fn get_and_assert_staged_task_count_greater_zero(target_config: &Config) -> Result<u64> {
     let target = Target::connect(target_config).await?;
     if !backfill_schema_exists(&target.client).await? {
         bail!("administrative schema `__backfill` not found. Run the `stage` command once before running `copy`.");
     }
-    if !are_tasks_pending(&target.client).await? {
+    let pending_task_count = get_pending_task_count(&target.client).await?;
+    if pending_task_count == 0 {
         bail!("there are no pending copy tasks. Use the `stage` command to add more.");
     }
-    Ok(())
+    Ok(pending_task_count)
 }
 
 pub async fn clean(target_config: &Config) -> Result<()> {
