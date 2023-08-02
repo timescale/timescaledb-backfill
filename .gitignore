@@ -1,2 +1,5 @@
 /target
 .idea
+/test-manual/dump.sql
+/test-manual/source.out
+/test-manual/target.out
