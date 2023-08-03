@@ -253,7 +253,7 @@ async fn copy_chunk_from_source_to_target(
     while let Some(row) = stream.next().await {
         let row = row?;
         let row_len = row.len();
-        buf.extend(row);
+        buf.extend_from_slice(&row);
         if buf.len() + row_len > buffer_size {
             sink.send(buf.split().freeze()).await?;
         }
