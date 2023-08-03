@@ -6,12 +6,14 @@ use crate::timescale::{
 };
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use futures_lite::future::block_on;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
+use tokio::task::spawn_blocking;
 use tokio_postgres::types::private::BytesMut;
-use tokio_postgres::{CopyInSink, Transaction};
+use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
 use tracing::{debug, trace};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
@@ -244,6 +246,17 @@ async fn copy_chunk_from_source_to_target(
 
     let stream = source_tx.copy_out(&copy_out).await?;
     let sink: CopyInSink<Bytes> = target_tx.copy_in(&copy_in).await?;
+
+    // Note: we must spawn copy_from_source_to_sink on a separate (blocking)
+    // thread, because it blocks the thread, breaking async.
+    let rows = spawn_blocking(move || block_on(copy_from_source_to_sink(stream, sink))).await??;
+
+    debug!("Copied {rows} for table {source_chunk_name}",);
+
+    Ok(())
+}
+
+async fn copy_from_source_to_sink(stream: CopyOutStream, sink: CopyInSink<Bytes>) -> Result<u64> {
     let buffer_size = 1024 * 1024; // 1MiB
     let mut buf = BytesMut::with_capacity(buffer_size);
 
@@ -262,10 +275,7 @@ async fn copy_chunk_from_source_to_target(
     }
 
     let rows = sink.finish().await?;
-
-    debug!("Copied {rows} for table {source_chunk_name}",);
-
-    Ok(())
+    Ok(rows)
 }
 
 async fn get_compressed_chunk(
