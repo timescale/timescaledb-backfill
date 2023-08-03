@@ -11,7 +11,7 @@ use futures_util::pin_mut;
 use futures_util::SinkExt;
 use once_cell::sync::OnceCell;
 use tokio_postgres::types::private::BytesMut;
-use tokio_postgres::{CopyInSink, Transaction};
+use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
 use tracing::{debug, trace};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
@@ -244,6 +244,15 @@ async fn copy_chunk_from_source_to_target(
 
     let stream = source_tx.copy_out(&copy_out).await?;
     let sink: CopyInSink<Bytes> = target_tx.copy_in(&copy_in).await?;
+
+    let rows = copy_from_source_to_sink(stream, sink).await?;
+
+    debug!("Copied {rows} for table {source_chunk_name}",);
+
+    Ok(())
+}
+
+async fn copy_from_source_to_sink(stream: CopyOutStream, sink: CopyInSink<Bytes>) -> Result<u64> {
     let buffer_size = 1024 * 1024; // 1MiB
     let mut buf = BytesMut::with_capacity(buffer_size);
 
@@ -255,18 +264,15 @@ async fn copy_chunk_from_source_to_target(
         let row_len = row.len();
         buf.extend_from_slice(&row);
         if buf.len() + row_len > buffer_size {
-            sink.send(buf.split().freeze()).await?;
+            sink.feed(buf.split().freeze()).await?;
         }
     }
     if !buf.is_empty() {
-        sink.send(buf.split().freeze()).await?;
+        sink.feed(buf.split().freeze()).await?;
     }
 
     let rows = sink.finish().await?;
-
-    debug!("Copied {rows} for table {source_chunk_name}",);
-
-    Ok(())
+    Ok(rows)
 }
 
 async fn get_compressed_chunk(
@@ -333,7 +339,7 @@ SELECT _timescaledb_internal.create_chunk(
 ///
 /// The generated table is not part of the chunks catalog, it's not associated
 /// with any uncompressed chunk and it's missing the corresponding indexes,
-/// constraints and triggers. To convert the table into a propper compressed
+/// constraints and triggers. To convert the table into a proper compressed
 /// chunk, first the compressed data has to be inserted into it, then it needs
 /// to be passed as argument to the
 /// `_timescaledb_internal.create_compressed_chunk` function.
