@@ -1,14 +1,18 @@
 use crate::connect::{Source, Target};
 use crate::logging::setup_logging;
-use crate::workers::PROCESSED_COUNT;
-use anyhow::{Context, Result};
+use crate::workers::{PoolMessage, PROCESSED_COUNT};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use console::Term;
 use human_repr::HumanDuration;
+use once_cell::sync::Lazy;
 use std::str::FromStr;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 use tokio_postgres::Config;
-use tracing::debug;
+use tracing::{debug, error};
 
 mod connect;
 mod execute;
@@ -17,6 +21,10 @@ mod sql;
 mod task;
 mod timescale;
 mod workers;
+
+static CTRLC_COUNT: AtomicU32 = AtomicU32::new(0);
+
+static TERM: Lazy<Term> = Lazy::new(Term::stdout);
 
 #[derive(Parser, Debug)]
 pub struct StageConfig {
@@ -109,29 +117,66 @@ async fn main() -> Result<()> {
             let task_count =
                 task::get_and_assert_staged_task_count_greater_zero(&target_config).await?;
 
-            println!("Preparing to copy {task_count} chunks");
+            TERM.write_line(&format!(
+                "Copying {task_count} chunks with {} workers",
+                args.parallelism
+            ))?;
 
-            let mut pool = workers::Pool::new(
+            let receiver = create_ctrl_c_handler().await?;
+
+            let pool = workers::Pool::new(
                 args.parallelism.into(),
                 &source_config,
                 &target_config,
                 task_count,
+                receiver,
             )
-            .await;
+            .await?;
 
             pool.join().await.with_context(|| "worker pool error")?;
-            println!(
+            TERM.write_line(&format!(
                 "Copied {} chunks in {}",
                 PROCESSED_COUNT.load(Relaxed),
                 start.elapsed().human_duration()
-            );
+            ))?;
             Ok(())
         }
         Command::Clean(args) => {
             let target_config = Config::from_str(&args.target)?;
             task::clean(&target_config).await?;
-            println!("Cleaned target");
+            TERM.write_line("Cleaned target")?;
             Ok(())
         }
     }
+}
+
+/// Spawns a task to intercept the ctrl-c signal and publish the action which
+/// should be taken to an mpsc channel, returning the rx end of the channel.
+async fn create_ctrl_c_handler() -> Result<UnboundedReceiver<PoolMessage>> {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::signal::ctrl_c().await.unwrap();
+            debug!("received ctrl-c");
+            let count = CTRLC_COUNT.fetch_add(1, Relaxed);
+            let result = if count == 0 {
+                debug!("sending graceful shutdown");
+                TERM.clear_line()?;
+                TERM.write_line("Shutting down, waiting for in-progress copies to complete...")?;
+                sender.send(PoolMessage::GracefulShutdown)
+            } else {
+                debug!("sending hard shutdown");
+                TERM.clear_line()?;
+                TERM.write_line("Terminating immediately.")?;
+                sender.send(PoolMessage::HardShutdown)
+            };
+            if let Err(e) = result {
+                error!("unable to send message: {}", e);
+                return Err(anyhow!("unable to send message: {}", e)) as Result<()>;
+            };
+        }
+    });
+
+    Ok(receiver)
 }

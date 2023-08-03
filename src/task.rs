@@ -1,5 +1,6 @@
 use crate::connect::{Source, Target};
 use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
+use crate::TERM;
 use anyhow::{bail, Context, Result};
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 
@@ -147,7 +148,7 @@ pub async fn load_queue(
     }
     target_tx.commit().await?;
 
-    println!("Staged {row_count} chunks to copy");
+    TERM.write_line(&format!("Staged {row_count} chunks to copy"))?;
 
     Ok(())
 }
