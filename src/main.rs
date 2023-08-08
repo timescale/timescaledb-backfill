@@ -1,10 +1,11 @@
 use crate::connect::{Source, Target};
+use crate::execute::TOTAL_BYTES_COPIED;
 use crate::logging::setup_logging;
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use console::Term;
-use human_repr::HumanDuration;
+use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
@@ -135,7 +136,8 @@ async fn main() -> Result<()> {
 
             pool.join().await.with_context(|| "worker pool error")?;
             TERM.write_line(&format!(
-                "Copied {} chunks in {}",
+                "Copied {} bytes from {} chunks in {}",
+                TOTAL_BYTES_COPIED.load(Relaxed).human_count_bytes(),
                 PROCESSED_COUNT.load(Relaxed),
                 start.elapsed().human_duration()
             ))?;
