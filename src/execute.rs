@@ -36,11 +36,14 @@ pub async fn copy_chunk(
     // from the uncompressed chunk, and write the uncompressed rows into the target.
     // Note: we must check the compression status in this transaction to ensure correctness.
     if task.filter.is_some() && is_chunk_compressed(source_tx, &task.source_chunk).await? {
-        warn!(
-            "Completion filter is within a compressed chunk, decompressing chunk {}",
-            target_chunk.quoted_name()
-        );
-        decompress_chunk(target_tx, &target_chunk).await?;
+        let target_chunk_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
+        if target_chunk_compressed {
+            warn!(
+                "Completion filter is within a compressed chunk, decompressing chunk {}",
+                target_chunk.quoted_name()
+            );
+            decompress_chunk(target_tx, &target_chunk).await?;
+        }
 
         // Copy rows in uncompressed form from source
         let result = copy_chunk_data(
@@ -55,6 +58,17 @@ pub async fn copy_chunk(
         return Ok(result);
     }
 
+    let source_compressed_chunk = get_compressed_chunk(source_tx, &task.source_chunk).await?;
+
+    if source_compressed_chunk.is_none() && is_chunk_compressed(target_tx, &target_chunk).await? {
+        // The source chunk was compressed at the time of schema dump, but has
+        // been decompressed in the meantime. We need to update the status of
+        // the target chunk to "decompressed", the simplest way to do this is
+        // to decompress it. We expect that the chunk is empty, so this should
+        // not incur any real overhead.
+        decompress_chunk(target_tx, &target_chunk).await?;
+    }
+
     let uncompressed_result = copy_chunk_data(
         source_tx,
         target_tx,
@@ -67,9 +81,7 @@ pub async fn copy_chunk(
 
     let mut compressed_result = None;
 
-    if let Some(source_compressed_chunk) =
-        get_compressed_chunk(source_tx, &task.source_chunk).await?
-    {
+    if let Some(source_compressed_chunk) = source_compressed_chunk {
         if let Some(target_compressed_chunk) =
             get_compressed_chunk(target_tx, &target_chunk).await?
         {
@@ -105,11 +117,34 @@ pub async fn copy_chunk(
             )
             .await?;
         };
+        if uncompressed_result.rows > 0 {
+            // We wrote compressed rows, and there are uncompressed rows. This
+            // chunk should be marked as being partial. If it was already
+            // partial, this will have no effect.
+            set_chunk_status_to_partial(target_tx, &target_chunk).await?;
+        }
     }
     Ok(CopyResult {
         rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
         bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
     })
+}
+
+async fn set_chunk_status_to_partial(
+    target_tx: &Transaction<'_>,
+    target_chunk: &TargetChunk,
+) -> Result<()> {
+    target_tx
+        .execute(
+            r"
+        UPDATE _timescaledb_catalog.chunk
+        SET status = status | 8
+        WHERE schema_name = $1
+          AND table_name = $2",
+            &[&target_chunk.schema, &target_chunk.table],
+        )
+        .await?;
+    Ok(())
 }
 
 async fn decompress_chunk(target_tx: &Transaction<'_>, target_chunk: &TargetChunk) -> Result<()> {
@@ -122,19 +157,18 @@ async fn decompress_chunk(target_tx: &Transaction<'_>, target_chunk: &TargetChun
     Ok(())
 }
 
-async fn is_chunk_compressed(source_tx: &Transaction<'_>, source_chunk: &Chunk) -> Result<bool> {
-    source_tx
-        .query_one(
-            r"
+async fn is_chunk_compressed(tx: &Transaction<'_>, chunk: &Chunk) -> Result<bool> {
+    tx.query_one(
+        r"
         SELECT is_compressed
         FROM timescaledb_information.chunks
         WHERE chunk_schema = $1
           AND chunk_name = $2",
-            &[&source_chunk.schema, &source_chunk.table],
-        )
-        .await
-        .map(|r| r.get("is_compressed"))
-        .context("failed to get chunk compression status")
+        &[&chunk.schema, &chunk.table],
+    )
+    .await
+    .map(|r| r.get("is_compressed"))
+    .context("failed to get chunk compression status")
 }
 
 #[derive(Debug, PartialEq)]
