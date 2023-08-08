@@ -41,6 +41,25 @@ static CREATE_CONTINUOUS_AGGREGATE: &str = r"
     GROUP BY time_bucket('1 day', time), device_id;
 ";
 
+static SETUP_BIGINT_HYPERTABLE: &str = r"
+    CREATE TABLE public.metrics(
+        time BIGINT,
+        device_id TEXT,
+        val FLOAT8);
+    SELECT create_hypertable('public.metrics', 'time', chunk_time_interval => 86400000); -- 1 day in milliseconds
+";
+
+static INSERT_7_DAYS_OF_BIGINT_DATA: &str = r"
+    INSERT INTO metrics (time, device_id, val)
+    SELECT time, device_id, random()
+    FROM generate_series(1, 604800000, 3600000) time
+    CROSS JOIN generate_series(1, 300) device_id;
+";
+
+static ADD_SPACE_DIMENSION_TO_HYPERTABLE: &str = r"
+    SELECT add_dimension('public.metrics', 'device_id', number_partitions => 15)
+";
+
 #[derive(Debug)]
 struct TestCase<'a, S, F>
 where
@@ -252,6 +271,51 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
                         .has_compressed_chunk_count("public", "metrics", 2);
+                }
+            }),
+        }
+    ),
+    (
+        copy_bigint_table,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_BIGINT_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_7_DAYS_OF_BIGINT_DATA),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            completion_time: "604800000",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 50400)
+                        .has_chunk_count("public", "metrics", 7)
+                        .has_compressed_chunk_count("public", "metrics", 1);
+                }
+            }),
+        }
+    ),
+    (
+        copy_bigint_table_with_space_dimension,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_BIGINT_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(ADD_SPACE_DIMENSION_TO_HYPERTABLE),
+                PsqlInput::Sql(INSERT_7_DAYS_OF_BIGINT_DATA),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            completion_time: "604800000",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 50400)
+                        .has_chunk_count("public", "metrics", 105)
+                        .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
         }
