@@ -42,6 +42,10 @@ static COMPRESS_ALL_CHUNKS: &str = r"
     SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false;
 ";
 
+static DECOMPRESS_ONE_CHUNK: &str = r"
+    SELECT decompress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = true LIMIT 1;
+";
+
 static CREATE_CONTINUOUS_AGGREGATE: &str = r"
     CREATE MATERIALIZED VIEW cagg
     WITH (timescaledb.continuous) AS
@@ -345,7 +349,33 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
-                target.has_table_count("public", "metrics", 120);
+                target
+                    .has_table_count("public", "metrics", 120)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 4);
+            }),
+        }
+    ),
+    (
+        copy_until_falls_within_chunk_in_source_which_after_skeleton_copy_became_compressed,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-05-05T23:30:00",
+            post_skeleton_source_sql: vec![PsqlInput::Sql(COMPRESS_ALL_CHUNKS),],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 5);
+                target
+                    .has_table_count("public", "metrics", 120)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 1);
             }),
         }
     ),
@@ -377,6 +407,76 @@ generate_tests!(
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
                 target.has_table_count("public", "metrics", 144);
+            }),
+        }
+    ),
+    (
+        copy_chunk_which_was_uncompressed_and_after_skeleton_copy_became_partial,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 1488)
+                        .has_chunk_count("public", "metrics", 5)
+                        .has_compressed_chunk_count("public", "metrics", 1);
+                }
+            }),
+        }
+    ),
+    (
+        copy_chunk_which_was_compressed_and_after_skeleton_copy_became_partial,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_MAY),],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in vec![source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 1488)
+                        .has_chunk_count("public", "metrics", 5)
+                        .has_compressed_chunk_count("public", "metrics", 1);
+                }
+            }),
+        }
+    ),
+    (
+        copy_chunk_which_was_compressed_and_after_skeleton_copy_was_uncompressed,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![PsqlInput::Sql(DECOMPRESS_ONE_CHUNK),],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 0);
+                target
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 0);
             }),
         }
     ),
