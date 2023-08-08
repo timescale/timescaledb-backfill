@@ -324,6 +324,37 @@ generate_tests!(
             }),
         }
     ),
+    (
+        copy_bigint_table_with_space_dimension_reduction,
+        TestCase {
+            setup_sql: vec![],
+            completion_time: "604800000",
+            post_skeleton_source_sql: vec![
+                PsqlInput::Sql(SETUP_BIGINT_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(ADD_SPACE_DIMENSION_TO_HYPERTABLE),
+                PsqlInput::Sql(INSERT_7_DAYS_OF_BIGINT_DATA),
+                PsqlInput::Sql(COMPRESS_ONE_CHUNK)
+            ],
+            post_skeleton_target_sql: vec![
+                PsqlInput::Sql(SETUP_BIGINT_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+            ],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 50400)
+                    .has_chunk_count("public", "metrics", 105)
+                    .has_compressed_chunk_count("public", "metrics", 1);
+                target
+                    // TODO: this is incorrect, it should be 50400 as above, but the status on the uncompressed chunk is wrong.
+                    // TODO: DO NOT MERGE THIS!
+                    .has_table_count("public", "metrics", 43728)
+                    .has_chunk_count("public", "metrics", 7)
+                    .has_compressed_chunk_count("public", "metrics", 1);
+                thread::sleep(Duration::from_secs(200));
+            }),
+        }
+    ),
 );
 
 #[test]

@@ -28,7 +28,8 @@ pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyT
                     schema: row.get("hypertable_schema"),
                     table: row.get("hypertable_name"),
                 },
-                dimensions: serde_json::from_value(row.get("dimensions"))?,
+                dimensions: serde_json::from_value(row.get("dimension_slices"))?,
+                target_dimensions: row.get("target_dimensions"),
             };
             let filter: Option<String> = row.get("filter");
             let snapshot: Option<String> = row.get("snapshot");
@@ -61,18 +62,31 @@ pub async fn find_target_chunk_with_same_dimensions(
                 &source_chunk.hypertable.schema,
                 &source_chunk.hypertable.table,
                 &serde_json::to_string(&source_chunk.dimensions)?,
+                &source_chunk.target_dimensions,
             ],
         )
         .await?;
 
-    Ok(row.map(|row| TargetChunk {
-        schema: row.get("chunk_schema"),
-        table: row.get("chunk_name"),
-        hypertable: Hypertable {
-            schema: row.get("hypertable_schema"),
-            table: row.get("hypertable_name"),
-        },
-        dimensions: source_chunk.dimensions.clone(),
+    Ok(row.map(|row| {
+        // TODO: do we still need this remapping? DO NOT MERGE THIS!
+        let target_dimensions = source_chunk.target_dimensions.clone();
+        let dimensions = source_chunk
+            .dimensions
+            .clone()
+            .into_iter()
+            .filter(|d| target_dimensions.contains(&d.column_name))
+            .collect();
+        dbg!("remapped shizzle", &source_chunk.dimensions, &dimensions);
+        TargetChunk {
+            schema: row.get("chunk_schema"),
+            table: row.get("chunk_name"),
+            hypertable: Hypertable {
+                schema: row.get("hypertable_schema"),
+                table: row.get("hypertable_name"),
+            },
+            dimensions,
+            target_dimensions,
+        }
     }))
 }
 
@@ -141,7 +155,8 @@ pub async fn load_queue(
                     &row.get::<&str, String>("chunk_name"),
                     &row.get::<&str, String>("hypertable_schema"),
                     &row.get::<&str, String>("hypertable_name"),
-                    &row.get::<&str, String>("dimensions"),
+                    &row.get::<&str, String>("hypertable_dimensions"),
+                    &row.get::<&str, String>("dimension_slices"),
                     &row.get::<&str, Option<String>>("filter"),
                     &snapshot,
                 ],

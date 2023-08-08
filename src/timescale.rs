@@ -25,6 +25,7 @@ pub struct Chunk {
     /// The dimensions need to be sorted by ID ASC. The order is important
     /// because it's used to match against other Chunk's dimensions.
     pub dimensions: Vec<DimensionRange>,
+    pub target_dimensions: Vec<String>,
 }
 
 pub type SourceChunk = Chunk;
@@ -44,6 +45,9 @@ impl Chunk {
     pub fn slices(&self) -> Result<String, serde_json::Error> {
         let mut dimensions_json = serde_json::Map::new();
         for dimension in &self.dimensions {
+            if !self.target_dimensions.contains(&dimension.column_name) {
+                continue;
+            }
             let column_name = &dimension.column_name;
             let range_start = dimension.range_start;
             let range_end = dimension.range_end;

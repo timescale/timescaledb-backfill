@@ -9,6 +9,7 @@ select
 , c.table_name as chunk_name
 , h.schema_name as hypertable_schema
 , h.table_name as hypertable_name
+, (select array_agg(d.column_name order by d.id) from _timescaledb_catalog.dimension d where d.hypertable_id = h.id)::TEXT as hypertable_dimensions
 , (
     select json_agg
     (
@@ -23,7 +24,7 @@ select
     from _timescaledb_catalog.chunk_constraint cc2
     inner join _timescaledb_catalog.dimension_slice ds2 on (cc2.chunk_id = c.id and cc2.dimension_slice_id = ds2.id)
     inner join _timescaledb_catalog.dimension d2 on (ds2.dimension_id = d2.id and d2.hypertable_id = h.id)
-  )::TEXT as dimensions
+  )::TEXT as dimension_slices
 , case when $2::text is not null and ds.range_start <= d.filter_value and d.filter_value < ds.range_end
     then format('%I <= %s', d.column_name, d.filter_literal)
   end as filter

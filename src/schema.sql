@@ -8,7 +8,9 @@ create table __backfill.task
 , chunk_name name not null
 , hypertable_schema name not null
 , hypertable_name name not null
-, dimensions jsonb not null
+, source_hypertable_dimensions text[] not null
+, target_hypertable_dimensions text[] not null
+, dimension_slices jsonb not null
 , filter text -- e.g. `where "time" < '2023-01-06'::timestamptz`
 , snapshot text
 );

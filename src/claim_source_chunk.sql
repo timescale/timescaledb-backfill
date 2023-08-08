@@ -5,7 +5,8 @@ select
 , chunk_name
 , hypertable_schema
 , hypertable_name
-, dimensions
+, target_hypertable_dimensions target_dimensions
+, dimension_slices
 , filter
 , snapshot
 from __backfill.task

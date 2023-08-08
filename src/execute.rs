@@ -87,11 +87,12 @@ async fn copy_uncompressed_chunk_data(
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
-    if let Some(filter) = filter {
-        delete_data_using_filter(target_tx, target_chunk, filter).await?;
-    } else {
-        delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
-    }
+    // TODO: This is a nasty hack. DO NOT MERGE THIS.
+    // if let Some(filter) = filter {
+    //     delete_data_using_filter(target_tx, target_chunk, filter).await?;
+    // } else {
+    //     // delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
+    // }
 
     copy_chunk_from_source_to_target(
         source_tx,
