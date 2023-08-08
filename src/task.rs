@@ -126,14 +126,16 @@ pub async fn load_queue(
         // filter error if it's an invalid regex. Eg `filter=[(` - ERROR: invalid regular expression: brackets [] not balanced
         .await.with_context(|| "failed to find hypertable/chunks in source. DB invalid errors might be related to the `until` and `filter` flags.")?;
 
-    static INSERT_SOURCE_CHUNKS: &str = include_str!("insert_source_chunks.sql");
-
     let row_count = rows.len();
+
+    let stmt = target_tx
+        .prepare(include_str!("insert_source_chunks.sql"))
+        .await?;
 
     for row in rows.iter() {
         target_tx
             .execute(
-                INSERT_SOURCE_CHUNKS,
+                &stmt,
                 &[
                     &row.get::<&str, String>("chunk_schema"),
                     &row.get::<&str, String>("chunk_name"),
