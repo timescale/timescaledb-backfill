@@ -4,7 +4,7 @@ use crate::task::{claim_copy_task, complete_copy_task};
 use crate::workers::TaskResult::{NoItem, Processed};
 use crate::TERM;
 use anyhow::{Context, Result};
-use human_repr::HumanDuration;
+use human_repr::{HumanDuration, HumanThroughput};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinSet;
@@ -212,17 +212,28 @@ impl Worker {
                 let start = Instant::now();
 
                 let source_tx = source.transaction().await?;
-                copy_chunk(&source_tx, &target_tx, &copy_task).await?;
+                let copy_result = copy_chunk(&source_tx, &target_tx, &copy_task).await?;
                 complete_copy_task(&target_tx, &copy_task).await?;
                 source_tx.commit().await?;
 
                 let prev = PROCESSED_COUNT.fetch_add(1, Ordering::Relaxed);
+                let elapsed = start.elapsed();
+                let throughput = if copy_result.bytes == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "({})",
+                        (copy_result.bytes as f64 / elapsed.as_secs_f64()).human_throughput_bytes()
+                    )
+                };
+
                 TERM.write_line(&format!(
-                    "[{}/{}] Copied chunk {} in {}",
+                    "[{}/{}] Copied chunk {} in {} {}",
                     prev + 1,
                     task_count,
                     copy_task.source_chunk.quoted_name(),
-                    start.elapsed().human_duration()
+                    start.elapsed().human_duration(),
+                    throughput
                 ))?;
                 Processed
             }

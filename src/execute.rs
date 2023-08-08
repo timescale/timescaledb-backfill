@@ -9,25 +9,29 @@ use bytes::Bytes;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
+use human_repr::HumanCount;
 use once_cell::sync::OnceCell;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
 use tracing::{debug, trace};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
+pub static TOTAL_BYTES_COPIED: AtomicUsize = AtomicUsize::new(0);
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
 
 pub async fn copy_chunk(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
     task: &CopyTask,
-) -> Result<()> {
+) -> Result<CopyResult> {
     let target_chunk = match task.target_chunk.as_ref() {
         Some(target_chunk) => target_chunk.clone(),
         None => create_uncompressed_chunk(target_tx, &task.source_chunk).await?,
     };
 
-    copy_uncompressed_chunk_data(
+    let uncompressed_result = copy_uncompressed_chunk_data(
         source_tx,
         target_tx,
         &task.source_chunk,
@@ -36,19 +40,22 @@ pub async fn copy_chunk(
     )
     .await?;
 
+    let mut compressed_result = None;
+
     if let Some(source_compressed_chunk) =
         get_compressed_chunk(source_tx, &task.source_chunk).await?
     {
         if let Some(target_compressed_chunk) =
             get_compressed_chunk(target_tx, &target_chunk).await?
         {
-            copy_compressed_chunk_data(
+            let result = copy_compressed_chunk_data(
                 source_tx,
                 target_tx,
                 &source_compressed_chunk,
                 &target_compressed_chunk,
             )
             .await?;
+            compressed_result = Some(result);
         } else {
             let target_compressed_chunk_data_table = create_compressed_chunk_data_table(
                 target_tx,
@@ -56,13 +63,14 @@ pub async fn copy_chunk(
                 &source_compressed_chunk,
             )
             .await?;
-            copy_compressed_chunk_data(
+            let result = copy_compressed_chunk_data(
                 source_tx,
                 target_tx,
                 &source_compressed_chunk,
                 &target_compressed_chunk_data_table,
             )
             .await?;
+            compressed_result = Some(result);
             create_compressed_chunk_from_data_table(
                 source_tx,
                 target_tx,
@@ -73,7 +81,10 @@ pub async fn copy_chunk(
             .await?;
         };
     }
-    Ok(())
+    Ok(CopyResult {
+        rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
+        bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
+    })
 }
 
 async fn copy_uncompressed_chunk_data(
@@ -82,7 +93,7 @@ async fn copy_uncompressed_chunk_data(
     source_chunk: &SourceChunk,
     target_chunk: &TargetChunk,
     filter: &Option<String>,
-) -> Result<()> {
+) -> Result<CopyResult> {
     debug!("Copying uncompressed chunk {}", source_chunk.quoted_name());
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
@@ -93,7 +104,7 @@ async fn copy_uncompressed_chunk_data(
         delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
     }
 
-    copy_chunk_from_source_to_target(
+    let copy_result = copy_chunk_from_source_to_target(
         source_tx,
         target_tx,
         &source_chunk.quoted_name(),
@@ -109,7 +120,7 @@ async fn copy_uncompressed_chunk_data(
         "Finished copying uncompressed chunk {}",
         source_chunk.quoted_name()
     );
-    Ok(())
+    Ok(copy_result)
 }
 
 async fn delete_data_using_filter(
@@ -122,7 +133,7 @@ async fn delete_data_using_filter(
     let rows = tx
         .execute(&format!("DELETE FROM {chunk_name} WHERE {filter}"), &[])
         .await?;
-    debug!("deleted '{rows}' rows");
+    debug!("Deleted {} rows from {chunk_name}", rows.human_count_bare());
     Ok(())
 }
 
@@ -199,12 +210,12 @@ async fn copy_compressed_chunk_data(
     target_tx: &Transaction<'_>,
     source_chunk: &CompressedChunk,
     target_chunk: &CompressedChunk,
-) -> Result<()> {
+) -> Result<CopyResult> {
     debug!("Copying compressed chunk {}", source_chunk.quoted_name());
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
-    copy_chunk_from_source_to_target(
+    let copy_result = copy_chunk_from_source_to_target(
         source_tx,
         target_tx,
         &source_chunk.quoted_name(),
@@ -221,7 +232,7 @@ async fn copy_compressed_chunk_data(
         "Finished copying compressed chunk {}",
         source_chunk.quoted_name()
     );
-    Ok(())
+    Ok(copy_result)
 }
 
 async fn copy_chunk_from_source_to_target(
@@ -230,7 +241,7 @@ async fn copy_chunk_from_source_to_target(
     source_chunk_name: &str,
     target_chunk_name: &str,
     filter: &Option<String>,
-) -> Result<()> {
+) -> Result<CopyResult> {
     let copy_out = filter.as_ref().map(|filter| {
         format!("COPY (SELECT * FROM ONLY {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT BINARY)")
     }).unwrap_or(
@@ -245,25 +256,39 @@ async fn copy_chunk_from_source_to_target(
     let stream = source_tx.copy_out(&copy_out).await?;
     let sink: CopyInSink<Bytes> = target_tx.copy_in(&copy_in).await?;
 
-    let rows = copy_from_source_to_sink(stream, sink).await?;
+    let result = copy_from_source_to_sink(stream, sink).await?;
 
-    debug!("Copied {rows} for table {source_chunk_name}",);
+    debug!(
+        "Copied {} in {} rows for table {source_chunk_name}",
+        result.bytes.human_count_bytes(),
+        result.rows.human_count_bare()
+    );
 
-    Ok(())
+    Ok(result)
 }
 
-async fn copy_from_source_to_sink(stream: CopyOutStream, sink: CopyInSink<Bytes>) -> Result<u64> {
+pub struct CopyResult {
+    pub rows: u64,
+    pub bytes: usize,
+}
+
+async fn copy_from_source_to_sink(
+    stream: CopyOutStream,
+    sink: CopyInSink<Bytes>,
+) -> Result<CopyResult> {
     let buffer_size = 1024 * 1024; // 1MiB
     let mut buf = BytesMut::with_capacity(buffer_size);
 
     pin_mut!(stream);
     pin_mut!(sink);
 
+    let mut bytes = 0;
+
     while let Some(row) = stream.next().await {
         let row = row?;
-        let row_len = row.len();
         buf.extend_from_slice(&row);
-        if buf.len() + row_len > buffer_size {
+        if buf.len() > buffer_size {
+            bytes += buf.len();
             sink.feed(buf.split().freeze()).await?;
         }
     }
@@ -272,7 +297,10 @@ async fn copy_from_source_to_sink(stream: CopyOutStream, sink: CopyInSink<Bytes>
     }
 
     let rows = sink.finish().await?;
-    Ok(rows)
+
+    TOTAL_BYTES_COPIED.fetch_add(bytes, Relaxed);
+
+    Ok(CopyResult { rows, bytes })
 }
 
 async fn get_compressed_chunk(
