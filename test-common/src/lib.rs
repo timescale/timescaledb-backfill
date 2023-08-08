@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use assert_cmd::prelude::*;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use log::debug;
 use std::fmt::{Display, Formatter};
@@ -68,17 +68,23 @@ pub fn generic_postgres(name: &str, tag: &str) -> GenericImage {
         ))
 }
 
-/// Runs backfill with the specified test configuration [`TestConfig`]
-/// waits for it to finish and returns its [`std::process::Output`].
-pub fn run_backfill(config: impl TestConfig) -> Result<Output> {
-    debug!("running backfill");
-    let child = Command::cargo_bin("timescaledb-backfill")?
+/// Spawns a backfill process with the specified test configuration [`TestConfig`],
+/// returning the associated [`std::process::Child`]
+pub fn spawn_backfill(config: impl TestConfig) -> Result<Child> {
+    Command::cargo_bin("timescaledb-backfill")?
         .arg(config.action())
         .args(config.args())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("Couldn't launch timescaledb-backfill");
+        .context("couldn't spawn timescaledb-backfill")
+}
+
+/// Runs backfill with the specified test configuration [`TestConfig`]
+/// waits for it to finish and returns its [`std::process::Output`].
+pub fn run_backfill(config: impl TestConfig) -> Result<Output> {
+    debug!("running backfill");
+    let child = spawn_backfill(config).expect("Couldn't launch timescaledb-backfill");
 
     child.wait_with_output().context("backfill process failed")
 }

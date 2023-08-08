@@ -1,7 +1,11 @@
 use anyhow::Result;
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
+use predicates::str::contains;
 use std::ffi::OsStr;
+use std::process::Command;
+use std::thread;
+use std::time::Duration;
 use test_common::PgVersion::PG15;
 use test_common::*;
 use testcontainers::clients::Cli;
@@ -336,5 +340,109 @@ fn clean_removes_schema() -> Result<()> {
         .with_name("target")
         .not_has_schema("__backfill");
 
+    Ok(())
+}
+
+#[test]
+fn ctrl_c_stops_gracefully() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(PG15));
+    let target_container = docker.run(timescaledb(PG15));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+            INSERT INTO metrics (time, device_id, val)
+            SELECT time, device_id, random()
+            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
+            CROSS JOIN generate_series(1, 10) device_id;
+        ",
+        ),
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
+
+    let child = spawn_backfill(TestConfigCopy::new(&source_container, &target_container)).unwrap();
+
+    thread::sleep(Duration::from_millis(30));
+
+    let mut kill = Command::new("kill")
+        .args(["-s", "INT", &child.id().to_string()])
+        .spawn()?;
+    kill.wait()?;
+
+    let output = child.wait_with_output().unwrap();
+
+    output.assert().success().stdout(
+        contains("Copying 1 chunks with 8 workers")
+            .and(contains(
+                "Shutting down, waiting for in-progress copies to complete...",
+            ))
+            .and(contains(
+                "[1/1] Copied chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\"",
+            ))
+            .and(contains("Copied 1 chunks")),
+    );
+    Ok(())
+}
+
+#[test]
+fn double_ctrl_c_stops_hard() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(PG15));
+    let target_container = docker.run(timescaledb(PG15));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+            INSERT INTO metrics (time, device_id, val)
+            SELECT time, device_id, random()
+            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
+            CROSS JOIN generate_series(1, 10) device_id;
+        ",
+        ),
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
+
+    let child = spawn_backfill(TestConfigCopy::new(&source_container, &target_container)).unwrap();
+
+    thread::sleep(Duration::from_millis(30));
+
+    let mut kill = Command::new("kill")
+        .args(["-s", "INT", &child.id().to_string()])
+        .spawn()?;
+    kill.wait()?;
+    let mut kill = Command::new("kill")
+        .args(["-s", "INT", &child.id().to_string()])
+        .spawn()?;
+    kill.wait()?;
+
+    let output = child.wait_with_output().unwrap();
+
+    output.assert().success().stdout(
+        contains("Copying 1 chunks with 8 workers")
+            .and(contains(
+                "Shutting down, waiting for in-progress copies to complete...",
+            ))
+            .and(
+                contains("[1/1] Copied chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\"").not(),
+            )
+            .and(contains("Copied 0 chunks")),
+    );
     Ok(())
 }
