@@ -38,6 +38,10 @@ static COMPRESS_ONE_CHUNK: &str = r"
     SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false LIMIT 1;
 ";
 
+static COMPRESS_ALL_CHUNKS: &str = r"
+    SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false;
+";
+
 static CREATE_CONTINUOUS_AGGREGATE: &str = r"
     CREATE MATERIALIZED VIEW cagg
     WITH (timescaledb.continuous) AS
@@ -321,6 +325,58 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 105)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+            }),
+        }
+    ),
+    (
+        copy_until_falls_within_compressed_chunk_in_source,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ALL_CHUNKS),
+            ],
+            completion_time: "2023-05-05T23:30:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 5);
+                target.has_table_count("public", "metrics", 120);
+            }),
+        }
+    ),
+    (
+        copy_until_falls_within_compressed_chunk_in_source_and_target,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(COMPRESS_ALL_CHUNKS),
+            ],
+            completion_time: "2023-05-05T23:30:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![
+                // this simulates a dual-write which has produced data in compressed chunks
+                PsqlInput::Sql(
+                    r"
+                    INSERT INTO metrics (time, device_id, val)
+                    SELECT time, 1, random()
+                    FROM generate_series('2023-05-01T00:00:00Z'::timestamptz, '2023-05-06T23:30:00Z'::timestamptz, '1 hour'::interval) time;
+                "
+                ),
+                PsqlInput::Sql(COMPRESS_ALL_CHUNKS),
+            ],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5)
+                    .has_compressed_chunk_count("public", "metrics", 5);
+                target.has_table_count("public", "metrics", 144);
             }),
         }
     ),
