@@ -9,12 +9,16 @@ use bytes::Bytes;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
 use futures_util::SinkExt;
-use once_cell::sync::OnceCell;
+use once_cell::sync::{Lazy, OnceCell};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
 use tracing::{debug, trace};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
+static PROCESSED_TARGETS: Lazy<Arc<Mutex<Vec<String>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
 
 pub async fn copy_chunk(
@@ -87,12 +91,19 @@ async fn copy_uncompressed_chunk_data(
 
     let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
 
-    // TODO: This is a nasty hack. DO NOT MERGE THIS.
-    // if let Some(filter) = filter {
-    //     delete_data_using_filter(target_tx, target_chunk, filter).await?;
-    // } else {
-    //     // delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
-    // }
+    // TODO: this doesn't work if writes to the target were paused and resumed.
+    // XXX: DO NOT MERGE!
+    if is_first_writer_into_chunk(target_chunk).await {
+        debug!(
+            "This worker is first writer into target chunk {}",
+            target_chunk.quoted_name()
+        );
+        if let Some(filter) = filter {
+            delete_data_using_filter(target_tx, target_chunk, filter).await?;
+        } else {
+            delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
+        }
+    }
 
     copy_chunk_from_source_to_target(
         source_tx,
@@ -111,6 +122,16 @@ async fn copy_uncompressed_chunk_data(
         source_chunk.quoted_name()
     );
     Ok(())
+}
+
+async fn is_first_writer_into_chunk(target_chunk: &TargetChunk) -> bool {
+    let mut targets = PROCESSED_TARGETS.lock().await;
+    if targets.contains(&target_chunk.quoted_name()) {
+        false
+    } else {
+        targets.push(target_chunk.quoted_name());
+        true
+    }
 }
 
 async fn delete_data_using_filter(

@@ -351,7 +351,6 @@ generate_tests!(
                     .has_table_count("public", "metrics", 43728)
                     .has_chunk_count("public", "metrics", 7)
                     .has_compressed_chunk_count("public", "metrics", 1);
-                thread::sleep(Duration::from_secs(200));
             }),
         }
     ),

@@ -68,7 +68,7 @@ pub async fn find_target_chunk_with_same_dimensions(
         .await?;
 
     Ok(row.map(|row| {
-        // TODO: do we still need this remapping? DO NOT MERGE THIS!
+        // If the target has fewer dimensions than the source, remove them.
         let target_dimensions = source_chunk.target_dimensions.clone();
         let dimensions = source_chunk
             .dimensions
@@ -76,7 +76,6 @@ pub async fn find_target_chunk_with_same_dimensions(
             .into_iter()
             .filter(|d| target_dimensions.contains(&d.column_name))
             .collect();
-        dbg!("remapped shizzle", &source_chunk.dimensions, &dimensions);
         TargetChunk {
             schema: row.get("chunk_schema"),
             table: row.get("chunk_name"),
