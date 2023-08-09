@@ -1,10 +1,11 @@
+use crate::execute::CopyMode::UncompressedOnly;
 use crate::sql::quote_table_name;
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
     Chunk, CompressedChunk, CompressionSize, SourceChunk, SourceCompressedChunk, TargetChunk,
     TargetCompressedChunk,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
@@ -15,7 +16,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 pub static TOTAL_BYTES_COPIED: AtomicUsize = AtomicUsize::new(0);
@@ -31,12 +32,36 @@ pub async fn copy_chunk(
         None => create_uncompressed_chunk(target_tx, &task.source_chunk).await?,
     };
 
-    let uncompressed_result = copy_uncompressed_chunk_data(
+    // If we're trying to filter on a compressed chunk, fall back to reading rows directly
+    // from the uncompressed chunk, and write the uncompressed rows into the target.
+    // Note: we must check the compression status in this transaction to ensure correctness.
+    if task.filter.is_some() && is_chunk_compressed(source_tx, &task.source_chunk).await? {
+        warn!(
+            "Completion filter is within a compressed chunk, decompressing chunk {}",
+            target_chunk.quoted_name()
+        );
+        decompress_chunk(target_tx, &target_chunk).await?;
+
+        // Copy rows in uncompressed form from source
+        let result = copy_chunk_data(
+            source_tx,
+            target_tx,
+            &task.source_chunk,
+            &target_chunk,
+            &task.filter,
+            CopyMode::UncompressedAndCompressed,
+        )
+        .await?;
+        return Ok(result);
+    }
+
+    let uncompressed_result = copy_chunk_data(
         source_tx,
         target_tx,
         &task.source_chunk,
         &target_chunk,
         &task.filter,
+        UncompressedOnly,
     )
     .await?;
 
@@ -87,12 +112,44 @@ pub async fn copy_chunk(
     })
 }
 
-async fn copy_uncompressed_chunk_data(
+async fn decompress_chunk(target_tx: &Transaction<'_>, target_chunk: &TargetChunk) -> Result<()> {
+    target_tx
+        .execute(
+            "SELECT public.decompress_chunk(format('%I.%I', $1::text, $2::text)::regclass)",
+            &[&target_chunk.schema, &target_chunk.table],
+        )
+        .await?;
+    Ok(())
+}
+
+async fn is_chunk_compressed(source_tx: &Transaction<'_>, source_chunk: &Chunk) -> Result<bool> {
+    source_tx
+        .query_one(
+            r"
+        SELECT is_compressed
+        FROM timescaledb_information.chunks
+        WHERE chunk_schema = $1
+          AND chunk_name = $2",
+            &[&source_chunk.schema, &source_chunk.table],
+        )
+        .await
+        .map(|r| r.get("is_compressed"))
+        .context("failed to get chunk compression status")
+}
+
+#[derive(Debug, PartialEq)]
+enum CopyMode {
+    UncompressedOnly,
+    UncompressedAndCompressed,
+}
+
+async fn copy_chunk_data(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
     source_chunk: &SourceChunk,
     target_chunk: &TargetChunk,
     filter: &Option<String>,
+    mode: CopyMode,
 ) -> Result<CopyResult> {
     debug!("Copying uncompressed chunk {}", source_chunk.quoted_name());
 
@@ -110,6 +167,7 @@ async fn copy_uncompressed_chunk_data(
         &source_chunk.quoted_name(),
         &target_chunk.quoted_name(),
         filter,
+        mode == UncompressedOnly,
     )
     .await?;
 
@@ -221,6 +279,7 @@ async fn copy_compressed_chunk_data(
         &source_chunk.quoted_name(),
         &target_chunk.quoted_name(),
         &None,
+        true,
     )
     .await?;
 
@@ -241,11 +300,13 @@ async fn copy_chunk_from_source_to_target(
     source_chunk_name: &str,
     target_chunk_name: &str,
     filter: &Option<String>,
+    use_only: bool,
 ) -> Result<CopyResult> {
+    let only = if use_only { "ONLY" } else { "" };
     let copy_out = filter.as_ref().map(|filter| {
-        format!("COPY (SELECT * FROM ONLY {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT BINARY)")
+        format!("COPY (SELECT * FROM {only} {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT BINARY)")
     }).unwrap_or(
-        format!("COPY (SELECT * FROM ONLY {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)")
+        format!("COPY (SELECT * FROM {only} {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)")
     );
 
     debug!("{copy_out}");
