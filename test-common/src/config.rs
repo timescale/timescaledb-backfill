@@ -4,6 +4,7 @@ use std::ffi::OsString;
 pub trait TestConfig {
     fn args(&self) -> Vec<OsString>;
     fn action(&self) -> &str;
+    fn envs(&self) -> Vec<(String, String)>;
 }
 
 #[derive(Default, Clone)]
@@ -30,6 +31,10 @@ impl TestConfig for TestConfigClean {
     fn action(&self) -> &str {
         "clean"
     }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        vec![]
+    }
 }
 
 #[derive(Default, Clone)]
@@ -37,6 +42,7 @@ pub struct TestConfigCopy {
     source: TestConnectionString,
     target: TestConnectionString,
     parallelism: u16,
+    envs: Vec<(String, String)>,
 }
 
 impl TestConfigCopy {
@@ -48,12 +54,20 @@ impl TestConfigCopy {
             source: source.connection_string(),
             target: target.connection_string(),
             parallelism: 8,
+            envs: vec![],
         }
     }
 
     pub fn with_parallel(&self, parallelism: u16) -> Self {
         Self {
             parallelism,
+            ..self.clone()
+        }
+    }
+
+    pub fn with_envs(&self, envs: Vec<(String, String)>) -> Self {
+        Self {
+            envs,
             ..self.clone()
         }
     }
@@ -73,6 +87,10 @@ impl TestConfig for TestConfigCopy {
 
     fn action(&self) -> &str {
         "copy"
+    }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        self.envs.clone()
     }
 }
 
@@ -120,5 +138,9 @@ impl TestConfig for TestConfigStage {
 
     fn action(&self) -> &str {
         "stage"
+    }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        vec![]
     }
 }

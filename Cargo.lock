@@ -1512,6 +1512,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tap-reader"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f13fc301d415a8cd4529ba679720c59f07369bcff573618a6e8d5afebefb6f3"
+
+[[package]]
 name = "tempfile"
 version = "3.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1622,6 +1628,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "tap-reader",
  "test-common",
  "testcontainers",
  "tokio",

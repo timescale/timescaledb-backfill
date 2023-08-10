@@ -74,6 +74,7 @@ pub fn spawn_backfill(config: impl TestConfig) -> Result<Child> {
     Command::cargo_bin("timescaledb-backfill")?
         .arg(config.action())
         .args(config.args())
+        .envs(config.envs())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
