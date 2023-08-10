@@ -1,11 +1,11 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use predicates::str::contains;
 use std::ffi::OsStr;
+use std::io::{BufRead, BufReader, Read};
 use std::process::Command;
-use std::thread;
-use std::time::Duration;
+use tap_reader::Tap;
 use test_common::PgVersion::PG15;
 use test_common::*;
 use testcontainers::clients::Cli;
@@ -433,16 +433,27 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 
     run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
 
-    let child = spawn_backfill(TestConfigCopy::new(&source_container, &target_container)).unwrap();
+    let mut child = spawn_backfill(
+        TestConfigCopy::new(&source_container, &target_container)
+            .with_envs(vec![(String::from("RUST_LOG"), String::from("debug"))]),
+    )
+    .unwrap();
 
-    thread::sleep(Duration::from_millis(30));
+    let mut tapped_stdout = Tap::new(child.stdout.take().unwrap());
+
+    wait_for_message_in_output(&mut tapped_stdout, "Copying uncompressed chunk")?;
 
     let mut kill = Command::new("kill")
         .args(["-s", "INT", &child.id().to_string()])
         .spawn()?;
     kill.wait()?;
 
-    let output = child.wait_with_output().unwrap();
+    let mut output = child.wait_with_output().unwrap();
+
+    // get the rest of the stdout output
+    tapped_stdout.read_to_end(&mut Vec::new())?;
+
+    output.stdout.append(&mut tapped_stdout.bytes);
 
     output.assert().success().stdout(
         contains("Copying 1 chunks with 8 workers")
@@ -454,7 +465,21 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
             ))
             .and(contains("Copied 1 chunks")),
     );
+
     Ok(())
+}
+
+fn wait_for_message_in_output<T: Read>(output: &mut T, message: &str) -> Result<()> {
+    let logs = BufReader::new(output);
+
+    for line in logs.lines() {
+        let line = line?;
+        if line.contains(message) {
+            return Ok(());
+        }
+    }
+
+    bail!("message '{message}' not found in output")
 }
 
 #[test]
@@ -483,9 +508,15 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
 
     run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
 
-    let child = spawn_backfill(TestConfigCopy::new(&source_container, &target_container)).unwrap();
+    let mut child = spawn_backfill(
+        TestConfigCopy::new(&source_container, &target_container)
+            .with_envs(vec![(String::from("RUST_LOG"), String::from("debug"))]),
+    )
+    .unwrap();
 
-    thread::sleep(Duration::from_millis(30));
+    let mut tapped_stdout = Tap::new(child.stdout.take().unwrap());
+
+    wait_for_message_in_output(&mut tapped_stdout, "Copying uncompressed chunk")?;
 
     let mut kill = Command::new("kill")
         .args(["-s", "INT", &child.id().to_string()])
@@ -496,7 +527,12 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
         .spawn()?;
     kill.wait()?;
 
-    let output = child.wait_with_output().unwrap();
+    let mut output = child.wait_with_output().unwrap();
+
+    // get the rest of the stdout output
+    tapped_stdout.read_to_end(&mut Vec::new())?;
+
+    output.stdout.append(&mut tapped_stdout.bytes);
 
     output.assert().success().stdout(
         contains("Copying 1 chunks with 8 workers")

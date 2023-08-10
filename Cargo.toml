@@ -38,5 +38,6 @@ tracing-subscriber = { version = "0.3.17", default-features = false, features = 
 assert_cmd = "2.0.11"
 postgres = "0.19.5"
 pretty_env_logger = "0.5.0"
+tap-reader = "1.0.1"
 testcontainers = "0.14.0"
 test-common = { path = "test-common" }
