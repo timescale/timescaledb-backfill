@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
 
             pool.join().await.with_context(|| "worker pool error")?;
             TERM.write_line(&format!(
-                "Copied {} bytes from {} chunks in {}",
+                "Copied {} from {} chunks in {}",
                 TOTAL_BYTES_COPIED.load(Relaxed).human_count_bytes(),
                 PROCESSED_COUNT.load(Relaxed),
                 start.elapsed().human_duration()
