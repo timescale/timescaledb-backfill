@@ -463,7 +463,7 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
             .and(contains(
                 "[1/1] Copied chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\"",
             ))
-            .and(contains("Copied 1 chunks")),
+            .and(contains("Copied 2.1MB from 1 chunks")),
     );
 
     Ok(())
@@ -542,7 +542,7 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
             .and(
                 contains("[1/1] Copied chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\"").not(),
             )
-            .and(contains("Copied 0 chunks")),
+            .and(contains("Copied 0B from 0 chunks")),
     );
     Ok(())
 }
