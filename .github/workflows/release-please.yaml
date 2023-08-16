@@ -1,0 +1,47 @@
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+name: release-please
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: google-github-actions/release-please-action@v3
+        id: release
+        with:
+          token: ${{ secrets.ORG_AUTOMATION_TOKEN }}
+          release-type: rust
+          bump-minor-pre-major: true # for pre-1.0.0, breaking changes are a minor bump
+          pull-request-header: ":robot: Release ready"
+          changelog-types: '[{"type":"feat","section":"Features","hidden":false},{"type":"fix","section":"Bug Fixes","hidden":false},{"type":"chore","section":"Miscellaneous","hidden":false}]'
+
+  upload-artifacts:
+    needs: release-please
+    runs-on: ubuntu-latest
+    if: needs.release-please.outputs.release_created
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.68.0
+          targets: x86_64-unknown-linux-musl
+
+      - run: cargo build --release
+
+      - name: Upload Release Artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run:
+          gh release upload ${{ needs.release-please.outputs.tag_name }} ./target/x86_64-unknown-linux-musl/release/timescaledb-backfill

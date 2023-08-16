@@ -29,6 +29,7 @@ jobs:
             files:
               - Cargo.toml
               - '**.rs'
+              - .cargo/config.toml
 
   lint_build_and_test:
     name: Lint, check, build, and test
