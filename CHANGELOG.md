@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/timescale/timescaledb-backfill/compare/v0.1.0...v0.1.1) (2023-08-17)
+
+
+### Bug Fixes
+
+* install build dependencies ([86be373](https://github.com/timescale/timescaledb-backfill/commit/86be37333c6efce60df0c7699d098ee7476c929c))
+
 ## 0.1.0 (2023-08-17)
 
 
