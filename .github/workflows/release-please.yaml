@@ -43,8 +43,14 @@ jobs:
 
       - run: cargo build --release
 
+      # By putting the executable in a tar archive, we can ensure that the executable bit remains set on the file, see: https://github.com/actions/upload-artifact#permission-loss
+      - name: Prepare tar archive
+        run: |
+          strip target/x86_64-unknown-linux-musl/release/timescaledb-backfill
+          tar -C target/x86_64-unknown-linux-musl/release -czvf timescaledb-backfill-x86_64-linux.tar.gz timescaledb-backfill
+
       - name: Upload Release Artifact
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run:
-          gh release upload ${{ needs.release-please.outputs.tag_name }} ./target/x86_64-unknown-linux-musl/release/timescaledb-backfill
+          gh release upload ${{ needs.release-please.outputs.tag_name }} timescaledb-backfill-x86_64-linux.tar.gz
