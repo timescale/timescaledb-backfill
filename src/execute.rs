@@ -32,10 +32,12 @@ pub async fn copy_chunk(
         None => create_uncompressed_chunk(target_tx, &task.source_chunk).await?,
     };
 
+    let source_chunk_compressed = is_chunk_compressed(source_tx, &task.source_chunk).await?;
+
     // If we're trying to filter on a compressed chunk, fall back to reading rows directly
     // from the uncompressed chunk, and write the uncompressed rows into the target.
     // Note: we must check the compression status in this transaction to ensure correctness.
-    if task.filter.is_some() && is_chunk_compressed(source_tx, &task.source_chunk).await? {
+    if task.filter.is_some() && source_chunk_compressed {
         let target_chunk_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
         if target_chunk_compressed {
             warn!(
@@ -55,6 +57,13 @@ pub async fn copy_chunk(
             CopyMode::UncompressedAndCompressed,
         )
         .await?;
+
+        if source_chunk_compressed && target_chunk_compressed {
+            // The source chunk was compressed, and the target chunk was
+            // compressed (before we decompressed it), so it should be safe to
+            // compress it again.
+            compress_chunk(target_tx, &target_chunk).await?;
+        }
         return Ok(result);
     }
 
@@ -147,13 +156,21 @@ async fn set_chunk_status_to_partial(
     Ok(())
 }
 
-async fn decompress_chunk(target_tx: &Transaction<'_>, target_chunk: &TargetChunk) -> Result<()> {
-    target_tx
-        .execute(
-            "SELECT public.decompress_chunk(format('%I.%I', $1::text, $2::text)::regclass)",
-            &[&target_chunk.schema, &target_chunk.table],
-        )
-        .await?;
+async fn compress_chunk(tx: &Transaction<'_>, chunk: &TargetChunk) -> Result<()> {
+    tx.execute(
+        "SELECT public.compress_chunk(format('%I.%I', $1::text, $2::text)::regclass)",
+        &[&chunk.schema, &chunk.table],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn decompress_chunk(tx: &Transaction<'_>, chunk: &TargetChunk) -> Result<()> {
+    tx.execute(
+        "SELECT public.decompress_chunk(format('%I.%I', $1::text, $2::text)::regclass)",
+        &[&chunk.schema, &chunk.table],
+    )
+    .await?;
     Ok(())
 }
 
