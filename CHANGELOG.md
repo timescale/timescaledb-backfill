@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/timescale/timescaledb-backfill/compare/v0.1.1...v0.1.2) (2023-08-21)
+
+
+### Bug Fixes
+
+* make sslmode=require work ([fec3902](https://github.com/timescale/timescaledb-backfill/commit/fec3902909cc05c34e13aafebfcfe61370124607)), closes [#41](https://github.com/timescale/timescaledb-backfill/issues/41)
+
+
+### Miscellaneous
+
+* put compiled binary in gzipped tar archive ([e803a0c](https://github.com/timescale/timescaledb-backfill/commit/e803a0cb97a974afa3fe74be0f8de923233b4332))
+
 ## [0.1.1](https://github.com/timescale/timescaledb-backfill/compare/v0.1.0...v0.1.1) (2023-08-17)
 
 
