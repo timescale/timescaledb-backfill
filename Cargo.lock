@@ -1564,7 +1564,7 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tokio-postgres",
- "tokio-postgres-rustls",
+ "tokio-postgres-rustls 0.10.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1633,7 +1633,7 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tokio-postgres",
- "tokio-postgres-rustls",
+ "tokio-postgres-rustls 0.10.0 (git+https://github.com/JamesGuthrie/tokio-postgres-rustls.git?rev=ab1c17c71fe9fa3942f5f6e871d7657a15db10ce)",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -1713,6 +1713,19 @@ name = "tokio-postgres-rustls"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd5831152cb0d3f79ef5523b357319ba154795d64c7078b2daa95a803b54057f"
+dependencies = [
+ "futures",
+ "ring",
+ "rustls",
+ "tokio",
+ "tokio-postgres",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "tokio-postgres-rustls"
+version = "0.10.0"
+source = "git+https://github.com/JamesGuthrie/tokio-postgres-rustls.git?rev=ab1c17c71fe9fa3942f5f6e871d7657a15db10ce#ab1c17c71fe9fa3942f5f6e871d7657a15db10ce"
 dependencies = [
  "futures",
  "ring",
