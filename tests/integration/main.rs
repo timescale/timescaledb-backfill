@@ -352,7 +352,7 @@ generate_tests!(
                 target
                     .has_table_count("public", "metrics", 120)
                     .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 4);
+                    .has_compressed_chunk_count("public", "metrics", 5);
             }),
         }
     ),
