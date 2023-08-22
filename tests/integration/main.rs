@@ -2,11 +2,11 @@ use anyhow::{bail, Result};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use predicates::str::contains;
+use std::env;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::process::Command;
 use tap_reader::Tap;
-use test_common::PgVersion::PG15;
 use test_common::*;
 use testcontainers::clients::Cli;
 
@@ -96,6 +96,14 @@ macro_rules! generate_tests {
     }
 }
 
+fn external_version() -> Option<PgVersion> {
+    env::var("BF_TEST_PG_VERSION").ok().map(PgVersion::from)
+}
+
+fn pg_version() -> PgVersion {
+    external_version().unwrap_or(PgVersion::PG15)
+}
+
 fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
     test_case: TestCase<S, F>,
 ) -> Result<()> {
@@ -103,8 +111,8 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     for sql in test_case.setup_sql {
         psql(&source_container, sql)?;
@@ -489,8 +497,8 @@ fn copy_without_stage_error() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     run_backfill(
         TestConfigCopy::new(&source_container, &target_container),
@@ -511,8 +519,8 @@ fn copy_without_available_tasks_error() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -540,8 +548,8 @@ fn clean_removes_schema() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
 
@@ -578,8 +586,8 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
@@ -658,8 +666,8 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(PG15));
-    let target_container = docker.run(timescaledb(PG15));
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(

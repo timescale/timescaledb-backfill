@@ -44,6 +44,19 @@ impl Display for PgVersion {
     }
 }
 
+impl<T: AsRef<str>> From<T> for PgVersion {
+    fn from(value: T) -> Self {
+        match value.as_ref() {
+            "11" => PgVersion::PG11,
+            "12" => PgVersion::PG12,
+            "13" => PgVersion::PG13,
+            "14" => PgVersion::PG14,
+            "15" => PgVersion::PG15,
+            _ => unimplemented!(),
+        }
+    }
+}
+
 pub const TIMESCALEDB_IMAGE: &str = "timescale/timescaledb-ha";
 
 /// Prepares a testcontainer image object for a given version of PostgreSQL

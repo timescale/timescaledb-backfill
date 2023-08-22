@@ -31,8 +31,8 @@ jobs:
               - '**.rs'
               - .cargo/config.toml
 
-  lint_build_and_test:
-    name: Lint, check, build, and test
+  lint:
+    name: Lint
 
     needs: changes
     if: ${{ needs.changes.outputs.files == 'true' }}
@@ -64,6 +64,35 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  test:
+    name: Test
+
+    needs: changes
+    if: ${{ needs.changes.outputs.files == 'true' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        pgversion: [ 12, 13, 14, 15 ]
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.68.0
+          targets: x86_64-unknown-linux-musl
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
       # This is required for the integration tests. If we move them to their
       # own action we can remove it.
       - name: Install PG15
@@ -77,8 +106,9 @@ jobs:
           pg_dump --version
 
       - name: Test
-        # There's a  bug with parallelism where tests connect to the wrong container
         run: cargo test
+        env:
+          BF_TEST_PG_VERSION: ${{ matrix.pgversion }}
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.
   ci-result:
@@ -86,13 +116,14 @@ jobs:
     if: always()
     needs:
       - changes
-      - lint_build_and_test
+      - lint
+      - test
     runs-on: ubuntu-latest
     steps:
       - name: Mark the job as a success
-        if: needs.changes.outputs.files == 'false' || needs.lint_build_and_test.result == 'success'
+        if: needs.changes.outputs.files == 'false' || (needs.lint.result == 'success' && needs.test.result == 'success')
         run: exit 0
       - name: Mark the job as a failure
-        if: needs.changes.outputs.files == 'true' && needs.lint_build_and_test.result != 'success'
+        if: needs.changes.outputs.files == 'true' && (needs.lint.result != 'success' || needs.test.result != 'success')
         run: exit 1
 
