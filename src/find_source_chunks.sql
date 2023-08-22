@@ -2,7 +2,7 @@
 -- dropping the triggers so it might not make a difference.
 /*
 $1 is a case insensitive posix regular expression filtering on hypertable schema.table
-$2 is an optional text value representing an upper bound on "time" dimension values
+$2 is a string that represents the upper bound on "time" dimension values
 */
 select
   c.schema_name as chunk_schema
@@ -24,7 +24,7 @@ select
     inner join _timescaledb_catalog.dimension_slice ds2 on (cc2.chunk_id = c.id and cc2.dimension_slice_id = ds2.id)
     inner join _timescaledb_catalog.dimension d2 on (ds2.dimension_id = d2.id and d2.hypertable_id = h.id)
   )::TEXT as dimensions
-, case when $2::text is not null and ds.range_start <= d.filter_value and d.filter_value < ds.range_end
+, case when ds.range_start <= d.filter_value and d.filter_value < ds.range_end
     then format('%I <= %s', d.column_name, d.filter_literal)
   end as filter
 from
@@ -73,7 +73,7 @@ inner join lateral
     limit 1
 ) d on (true)
 inner join _timescaledb_catalog.dimension_slice ds
-on (d.id = ds.dimension_id and ($2::text is null or ds.range_start <= d.filter_value))
+on (d.id = ds.dimension_id and ds.range_start <= d.filter_value)
 inner join _timescaledb_catalog.chunk_constraint cc on (ds.id = cc.dimension_slice_id)
 inner join _timescaledb_catalog.chunk c on (cc.chunk_id = c.id and h.id = c.hypertable_id)
 order by ds.range_start desc

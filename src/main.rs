@@ -37,13 +37,34 @@ pub struct StageConfig {
     #[arg(long)]
     target: String,
 
+    /// The completion point to copy chunk data until. The backfill process
+    /// will copy all chunk rows where the time dimension column is less than
+    /// or equal to this value.
+    ///
+    /// It accepts any representation of a valid time dimension value:
+    ///
+    /// - Timestamp: TIMESTAMP, TIMESTAMPTZ
+    /// - Date: DATE
+    /// - Integer: SMALLINT, INT, BIGINT
+    ///
+    /// The value will be parsed to the correct type as defined by the time
+    /// dimension column type.
+    ///
+    /// A combination of `--until` and `--filter` can be used to specify
+    /// different completion points for different tables. For example, in the
+    /// case with hypertables that use auto-increment integers for their time
+    /// dimensions, or a combination of hypertables with some using timestamp
+    /// and others using integer.
+    ///
+    /// timescaledb-backfill stage --filter epoch_schema.* --until 1692696465
+    /// timescaledb-backfill stage --filter public.table_with_auto_increment_integer --until 424242
+    /// timescaledb-backfill stage --filter public.table_with_timestampt --until '2016-02-01T18:20:00'
+    #[arg(short, long)]
+    until: String,
+
     /// Posix regular expression used to match `schema.table` for hypertables
     #[arg(short, long = "filter")]
     table_filter: Option<String>,
-
-    /// The completion point to copy chunk data until
-    #[arg(short, long)]
-    until: Option<String>,
 
     /// A postgres snapshot exported from source to use when copying
     #[arg(short, long)]

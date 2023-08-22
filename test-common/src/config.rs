@@ -98,42 +98,33 @@ impl TestConfig for TestConfigCopy {
 pub struct TestConfigStage {
     source: TestConnectionString,
     target: TestConnectionString,
-    until: Option<String>,
+    until: String,
 }
 
 impl TestConfigStage {
     pub fn new<S: HasConnectionString, T: HasConnectionString>(
         source: &'_ S,
         target: &'_ T,
+        until: &str,
     ) -> Self {
         Self {
             source: source.connection_string(),
             target: target.connection_string(),
-            until: None,
-        }
-    }
-
-    pub fn with_completion_time(&self, until: &str) -> Self {
-        Self {
-            until: Some(until.into()),
-            ..self.clone()
+            until: until.to_string(),
         }
     }
 }
 
 impl TestConfig for TestConfigStage {
     fn args(&self) -> Vec<OsString> {
-        let mut args = vec![
+        vec![
             OsString::from("--source"),
             OsString::from(self.source.as_str()),
             OsString::from("--target"),
             OsString::from(self.target.as_str()),
-        ];
-
-        if let Some(until) = self.until.as_ref() {
-            args.extend_from_slice(&["--until".into(), OsString::from(until)]);
-        }
-        args
+            OsString::from("--until"),
+            OsString::from(&self.until),
+        ]
     }
 
     fn action(&self) -> &str {

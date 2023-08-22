@@ -111,7 +111,7 @@ pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
     table_filter: Option<String>,
-    until: Option<String>,
+    until: String,
     snapshot: Option<String>,
 ) -> Result<()> {
     init_schema(target).await?;
