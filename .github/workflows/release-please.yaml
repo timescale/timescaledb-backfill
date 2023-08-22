@@ -41,7 +41,7 @@ jobs:
           toolchain: 1.68.0
           targets: x86_64-unknown-linux-musl
 
-      - run: cargo build --release
+      - run: cargo build --release --target x86_64-unknown-linux-musl
 
       # By putting the executable in a tar archive, we can ensure that the executable bit remains set on the file, see: https://github.com/actions/upload-artifact#permission-loss
       - name: Prepare tar archive
