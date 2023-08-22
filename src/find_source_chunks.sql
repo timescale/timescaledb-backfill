@@ -52,7 +52,7 @@ inner join lateral
             _timescaledb_internal.time_to_internal($2::text::timestamptz)
         when d.column_type = 'date'::regtype then
             _timescaledb_internal.time_to_internal($2::text::date)
-        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and regexp_like($2::text, '^[0-9]+$') then
+        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $2::text ~ '^[0-9]+$' then
             _timescaledb_internal.time_to_internal(cast($2::text as bigint))
       end as filter_value
     , case
@@ -64,7 +64,7 @@ inner join lateral
             format('%L', $2::text::timestamptz)
         when d.column_type = 'date'::regtype then
             format('%L', $2::text::date)
-        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and regexp_like($2::text, '^[0-9]+$') then
+        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $2::text ~ '^[0-9]+$' then
             format('%L', cast($2::text as bigint))
       end as filter_literal
     from _timescaledb_catalog.dimension d
