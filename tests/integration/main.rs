@@ -120,10 +120,11 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         psql(&target_container, sql)?;
     }
 
-    run_backfill(
-        TestConfigStage::new(&source_container, &target_container)
-            .with_completion_time(test_case.completion_time),
-    )
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        test_case.completion_time,
+    ))
     .unwrap()
     .assert()
     .success();
@@ -513,10 +514,14 @@ fn copy_without_available_tasks_error() -> Result<()> {
     let source_container = docker.run(timescaledb(PG15));
     let target_container = docker.run(timescaledb(PG15));
 
-    run_backfill(TestConfigStage::new(&source_container, &target_container))
-        .unwrap()
-        .assert()
-        .success();
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "20160201",
+    ))
+    .unwrap()
+    .assert()
+    .success();
 
     run_backfill(TestConfigCopy::new(&source_container, &target_container))
         .unwrap()
@@ -540,10 +545,14 @@ fn clean_removes_schema() -> Result<()> {
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
 
-    run_backfill(TestConfigStage::new(&source_container, &target_container))
-        .unwrap()
-        .assert()
-        .success();
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "20160201",
+    ))
+    .unwrap()
+    .assert()
+    .success();
 
     DbAssert::new(&target_container.connection_string())
         .unwrap()
@@ -587,7 +596,12 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 
     copy_skeleton_schema(&source_container, &target_container)?;
 
-    run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-05-10T23:59:00Z",
+    ))
+    .unwrap();
 
     let mut child = spawn_backfill(
         TestConfigCopy::new(&source_container, &target_container)
@@ -662,7 +676,12 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
 
     copy_skeleton_schema(&source_container, &target_container)?;
 
-    run_backfill(TestConfigStage::new(&source_container, &target_container)).unwrap();
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-05-10T23:59:00Z",
+    ))
+    .unwrap();
 
     let mut child = spawn_backfill(
         TestConfigCopy::new(&source_container, &target_container)
