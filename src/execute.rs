@@ -15,7 +15,7 @@ use once_cell::sync::OnceCell;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use tokio_postgres::types::private::BytesMut;
-use tokio_postgres::{CopyInSink, CopyOutStream, Transaction};
+use tokio_postgres::{CopyInSink, CopyOutStream, GenericClient, Transaction};
 use tracing::{debug, trace, warn};
 
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
@@ -703,4 +703,22 @@ WHERE c.schema_name = $1 AND c.table_name = $2
         numrows_pre_compression: row.get("numrows_pre_compression"),
         numrows_post_compression: row.get("numrows_post_compression"),
     })
+}
+
+pub async fn chunk_exists<T>(client: &T, chunk: &Chunk) -> Result<bool>
+where
+    T: GenericClient,
+{
+    let query: &str = r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM _timescaledb_catalog.chunk
+  WHERE schema_name = $1
+    AND table_name = $2
+)
+"#;
+    let exists = client
+        .query_one(query, &[&chunk.schema, &chunk.table])
+        .await?;
+    Ok(exists.get(0))
 }

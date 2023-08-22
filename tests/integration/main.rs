@@ -729,3 +729,72 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    // Given 2 chunks
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    copy_skeleton_schema(&source_container, &target_container)?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        INSERT INTO metrics(time, device_id, val)
+        VALUES
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
+        ),
+    )?;
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2016-01-02T00:00:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(predicate::str::contains("Staged 2 chunks to copy"));
+
+    // When we delete a chunk that has already been staged
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        SELECT public.drop_chunks(
+            'public.metrics',
+            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month'
+        )",
+        ),
+    )?;
+
+    // Then the chunk is skipped and all the other task execute regularly
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Skipping chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\" because it no longer exists on source",
+        )).stdout(
+        predicate::str::contains(
+            "Copied chunk \"_timescaledb_internal\".\"_hyper_1_2_chunk\" in",
+        ));
+
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    source_dbassert.has_chunk_count("public", "metrics", 1);
+    target_dbassert.has_chunk_count("public", "metrics", 1);
+
+    Ok(())
+}

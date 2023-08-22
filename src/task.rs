@@ -76,10 +76,14 @@ pub async fn find_target_chunk_with_same_dimensions(
     }))
 }
 
-pub async fn complete_copy_task(target_tx: &Transaction<'_>, copy_task: &CopyTask) -> Result<()> {
+pub async fn complete_copy_task(
+    target_tx: &Transaction<'_>,
+    copy_task: &CopyTask,
+    copy_message: &str,
+) -> Result<()> {
     static COMPLETE_SOURCE_CHUNK: &str = include_str!("complete_source_chunk.sql");
     target_tx
-        .execute(COMPLETE_SOURCE_CHUNK, &[&copy_task.priority])
+        .execute(COMPLETE_SOURCE_CHUNK, &[&copy_task.priority, &copy_message])
         .await?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::connect::{Source, Target};
-use crate::execute::copy_chunk;
+use crate::execute::{chunk_exists, copy_chunk};
 use crate::task::{claim_copy_task, complete_copy_task};
 use crate::workers::TaskResult::{NoItem, Processed};
 use crate::TERM;
@@ -212,28 +212,44 @@ impl Worker {
                 let start = Instant::now();
 
                 let source_tx = source.transaction().await?;
-                let copy_result = copy_chunk(&source_tx, &target_tx, &copy_task).await?;
-                complete_copy_task(&target_tx, &copy_task).await?;
+
+                let copy_result_message: String =
+                    // The chunk could've been deleted by a retention job while
+                    // waiting to be processed.
+                    if !chunk_exists(&source_tx, &copy_task.source_chunk).await? {
+                        format!(
+                            "Skipping chunk {} because it no longer exists on source",
+                            copy_task.source_chunk.quoted_name()
+                        )
+                    } else {
+                        let copy_result = copy_chunk(&source_tx, &target_tx, &copy_task).await?;
+
+                        let elapsed = start.elapsed();
+                        let throughput = if copy_result.bytes == 0 {
+                            String::new()
+                        } else {
+                            format!(
+                                "({})",
+                                (copy_result.bytes as f64 / elapsed.as_secs_f64())
+                                    .human_throughput_bytes()
+                            )
+                        };
+
+                        format!(
+                            "Copied chunk {} in {} {}",
+                            copy_task.source_chunk.quoted_name(),
+                            start.elapsed().human_duration(),
+                            throughput
+                        )
+                    };
+                complete_copy_task(&target_tx, &copy_task, &copy_result_message).await?;
                 source_tx.commit().await?;
-
                 let prev = PROCESSED_COUNT.fetch_add(1, Ordering::Relaxed);
-                let elapsed = start.elapsed();
-                let throughput = if copy_result.bytes == 0 {
-                    String::new()
-                } else {
-                    format!(
-                        "({})",
-                        (copy_result.bytes as f64 / elapsed.as_secs_f64()).human_throughput_bytes()
-                    )
-                };
-
                 TERM.write_line(&format!(
-                    "[{}/{}] Copied chunk {} in {} {}",
+                    "[{}/{}] {}",
                     prev + 1,
                     task_count,
-                    copy_task.source_chunk.quoted_name(),
-                    start.elapsed().human_duration(),
-                    throughput
+                    copy_result_message
                 ))?;
                 Processed
             }
