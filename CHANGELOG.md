@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.0](https://github.com/timescale/timescaledb-backfill/compare/v0.1.2...v0.2.0) (2023-08-22)
+
+
+### Features
+
+* make --until mandatory ([ca9038e](https://github.com/timescale/timescaledb-backfill/commit/ca9038ee998fd06162ff223d64b636871477a540))
+
+
+### Bug Fixes
+
+* ensure correct chunk status ([964de48](https://github.com/timescale/timescaledb-backfill/commit/964de48c8a617842e785f98056f130737ff055d5))
+* recompress when 'until' falls within a compressed chunk ([cf0ebe7](https://github.com/timescale/timescaledb-backfill/commit/cf0ebe7dfc065ca031fadd408fb4c65875aa91e0)), closes [#69](https://github.com/timescale/timescaledb-backfill/issues/69)
+* support pg12 ([a9c1885](https://github.com/timescale/timescaledb-backfill/commit/a9c188537ade3ccd757645ce2070c9487b58e8a3))
+
+
+### Miscellaneous
+
+* run test suite against pg12 through pg15 ([0b92f19](https://github.com/timescale/timescaledb-backfill/commit/0b92f199869f85f7e98f6e85e01700c0e5e46a8c))
+
 ## [0.1.2](https://github.com/timescale/timescaledb-backfill/compare/v0.1.1...v0.1.2) (2023-08-21)
 
 
