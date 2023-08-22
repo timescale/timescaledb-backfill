@@ -67,15 +67,27 @@ pub async fn copy_chunk(
         return Ok(result);
     }
 
+    let target_supports_mutation_of_compressed_hypertables =
+        supports_mutation_of_compressed_hypertables(target_tx).await?;
+
     let source_compressed_chunk = get_compressed_chunk(source_tx, &task.source_chunk).await?;
 
-    if source_compressed_chunk.is_none() && is_chunk_compressed(target_tx, &target_chunk).await? {
+    let target_chunk_is_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
+
+    if target_chunk_is_compressed {
         // The source chunk was compressed at the time of schema dump, but has
         // been decompressed in the meantime. We need to update the status of
         // the target chunk to "decompressed", the simplest way to do this is
         // to decompress it. We expect that the chunk is empty, so this should
         // not incur any real overhead.
-        decompress_chunk(target_tx, &target_chunk).await?;
+        let source_chunk_decompressed = source_compressed_chunk.is_none();
+        // The target doesn't support mutable compression, so we won't be able
+        // to remove any rows which would be present in the target chunk. To
+        // work around this, we we'll decompress the target chunk
+        let no_mutable_compression = !target_supports_mutation_of_compressed_hypertables;
+        if source_chunk_decompressed || no_mutable_compression {
+            decompress_chunk(target_tx, &target_chunk).await?;
+        }
     }
 
     let uncompressed_result = copy_chunk_data(
@@ -137,6 +149,19 @@ pub async fn copy_chunk(
         rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
         bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
     })
+}
+
+async fn supports_mutation_of_compressed_hypertables(tx: &Transaction<'_>) -> Result<bool> {
+    // Note: Mutation of compressed hypertables is only supported from pg14 and
+    // timescale 2.11.0, see https://github.com/timescale/timescaledb/pull/5339
+    Ok(tx.query_one(r"
+        SELECT
+            current_setting('server_version_num')::INT >= 140000
+            AND
+            (SELECT split_part(extversion, '.', 1)::INT FROM pg_catalog.pg_extension WHERE extname='timescaledb') = 2
+            AND
+            (SELECT split_part(extversion, '.', 2)::INT FROM pg_catalog.pg_extension WHERE extname='timescaledb') >= 11
+    ", &[]).await?.get(0))
 }
 
 async fn set_chunk_status_to_partial(
