@@ -256,6 +256,19 @@ impl DbAssert {
         self
     }
 
+    pub fn has_task_count(&mut self, count: i64) -> &mut Self {
+        let task_count = self._get_task_count().unwrap();
+        assert_eq!(
+            task_count,
+            count,
+            "{}task count is '{}', not '{}'",
+            self.name(),
+            task_count,
+            count
+        );
+        self
+    }
+
     pub fn job_runs_successfully<T: AsRef<str>>(
         &mut self,
         schema: T,
@@ -457,6 +470,13 @@ SELECT EXISTS (
               AND hypertable_name = $2"#,
             &[&schema, &table],
         )?;
+        Ok(row.get("count"))
+    }
+
+    fn _get_task_count(&mut self) -> Result<i64> {
+        let row = self
+            .connection()
+            .query_one("SELECT count(*) FROM __backfill.task", &[])?;
         Ok(row.get("count"))
     }
 
