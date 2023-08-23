@@ -780,7 +780,7 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
         .assert()
         .success()
         .stdout(contains(
-            "Skipping chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\" because it no longer exists on source",
+            r#"Skipping chunk "_timescaledb_internal"."_hyper_1_1_chunk" because it no longer exists on source"#,
         )).stdout(
        contains(
             r#"Copied chunk "_timescaledb_internal"."_hyper_1_2_chunk" in"#,
