@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1](https://github.com/timescale/timescaledb-backfill/compare/v0.2.0...v0.2.1) (2023-08-23)
+
+
+### Bug Fixes
+
+* ignore task when source chunk doesn't exists ([#83](https://github.com/timescale/timescaledb-backfill/issues/83)) ([b3ea19f](https://github.com/timescale/timescaledb-backfill/commit/b3ea19f9f6eee1c46fd7564061a37063aa31cec0))
+
+
+### Miscellaneous
+
+* remove cargo config ([afce7f2](https://github.com/timescale/timescaledb-backfill/commit/afce7f20768a5cf6a3d2f90ddb3f7050baea23c0))
+* update dependencies ([e2ca690](https://github.com/timescale/timescaledb-backfill/commit/e2ca6908b93a51b7e9e9373a42dcff2d4041ae69))
+
 ## [0.2.0](https://github.com/timescale/timescaledb-backfill/compare/v0.1.2...v0.2.0) (2023-08-22)
 
 
