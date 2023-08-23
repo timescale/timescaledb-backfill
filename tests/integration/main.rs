@@ -864,3 +864,68 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn duplicated_stage_task_is_skipped() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    copy_skeleton_schema(&source_container, &target_container)?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        INSERT INTO metrics(time, device_id, val)
+        VALUES
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
+        ),
+    )?;
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2016-01-02T00:00:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("Staged 1 chunks to copy"));
+
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    target_dbassert.has_task_count(1);
+
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        INSERT INTO metrics(time, device_id, val)
+        VALUES
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 day', 7, 21),
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month', 7, 21)",
+        ),
+    )?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2016-01-02T00:00:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("Staged 2 chunks"))
+    .stdout(contains(
+        "Skipping 1 chunks that were already staged. To re-stage run the `clean` command first",
+    ));
+
+    target_dbassert.has_task_count(3);
+
+    Ok(())
+}

@@ -16,3 +16,5 @@ values
 , $6
 , $7
 )
+on conflict do nothing
+returning true as inserted

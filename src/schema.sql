@@ -15,3 +15,4 @@ create table __backfill.task
 );
 
 create unique index on __backfill.task (priority) where (worked is null);
+create unique index on __backfill.task (chunk_schema, chunk_name);

@@ -3,6 +3,7 @@ use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Context, Result};
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
+use tracing::debug;
 
 #[derive(Debug)]
 pub struct CopyTask {
@@ -130,31 +131,49 @@ pub async fn load_queue(
         // filter error if it's an invalid regex. Eg `filter=[(` - ERROR: invalid regular expression: brackets [] not balanced
         .await.with_context(|| "failed to find hypertable/chunks in source. DB invalid errors might be related to the `until` and `filter` flags.")?;
 
-    let row_count = rows.len();
+    let chunk_count = rows.len();
+    let mut skipped_chunks = 0;
 
     let stmt = target_tx
         .prepare(include_str!("insert_source_chunks.sql"))
         .await?;
 
     for row in rows.iter() {
-        target_tx
-            .execute(
+        let chunk_schema: &str = row.get("chunk_schema");
+        let chunk_name: &str = row.get("chunk_name");
+        let hypertable_schema: &str = row.get("hypertable_schema");
+        let hypertable_name: &str = row.get("hypertable_name");
+        let row = target_tx
+            .query_opt(
                 &stmt,
                 &[
-                    &row.get::<&str, String>("chunk_schema"),
-                    &row.get::<&str, String>("chunk_name"),
-                    &row.get::<&str, String>("hypertable_schema"),
-                    &row.get::<&str, String>("hypertable_name"),
+                    &chunk_schema,
+                    &chunk_name,
+                    &hypertable_schema,
+                    &hypertable_name,
                     &row.get::<&str, String>("dimensions"),
                     &row.get::<&str, Option<String>>("filter"),
                     &snapshot,
                 ],
             )
             .await?;
+
+        // Check for duplicate tasks and notify the user of which ones have
+        // been skipped.
+        if row.is_none() {
+            debug!("Task for chunk \"{chunk_schema}\".\"{chunk_name}\" of hypertable \"{hypertable_schema}\".\"{hypertable_name}\" already exists; skipping");
+            skipped_chunks += 1;
+        }
     }
     target_tx.commit().await?;
 
-    TERM.write_line(&format!("Staged {row_count} chunks to copy"))?;
+    let task_count = chunk_count - skipped_chunks;
+    TERM.write_line(&format!("Staged {task_count} chunks to copy"))?;
+    if skipped_chunks > 0 {
+        TERM.write_line(&format!(
+            "Skipping {skipped_chunks} chunks that were already staged. To re-stage run the `clean` command first."
+        ))?;
+    }
 
     Ok(())
 }
