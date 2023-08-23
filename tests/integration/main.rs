@@ -760,7 +760,7 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     .unwrap()
     .assert()
     .success()
-    .stdout(predicate::str::contains("Staged 2 chunks to copy"));
+    .stdout(contains("Staged 2 chunks to copy"));
 
     // When we delete a chunk that has already been staged
     psql(
@@ -779,11 +779,11 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
         .unwrap()
         .assert()
         .success()
-        .stdout(predicate::str::contains(
+        .stdout(contains(
             "Skipping chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\" because it no longer exists on source",
         )).stdout(
-        predicate::str::contains(
-            "Copied chunk \"_timescaledb_internal\".\"_hyper_1_2_chunk\" in",
+       contains(
+            r#"Copied chunk "_timescaledb_internal"."_hyper_1_2_chunk" in"#,
         ));
 
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
