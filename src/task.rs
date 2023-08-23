@@ -5,8 +5,14 @@ use anyhow::{bail, Context, Result};
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
 
+#[derive(Debug, Clone)]
+pub enum TaskType {
+    Copy,
+    Verify,
+}
+
 #[derive(Debug)]
-pub struct CopyTask {
+pub struct Task {
     pub priority: i64,
     pub source_chunk: SourceChunk,
     pub target_chunk: Option<TargetChunk>,
@@ -14,10 +20,11 @@ pub struct CopyTask {
     pub snapshot: Option<String>,
 }
 
-pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyTask>> {
-    static CLAIM_COPY_TASK: &str = include_str!("claim_source_chunk.sql");
+pub type CopyTask = Task;
+pub type VerifyTask = Task;
 
-    let row = target_tx.query_opt(CLAIM_COPY_TASK, &[]).await?;
+pub async fn claim_task(target_tx: &Transaction<'_>, claim_query: &str) -> Result<Option<Task>> {
+    let row = target_tx.query_opt(claim_query, &[]).await?;
     match row {
         Some(row) => {
             let priority: i64 = row.get("priority");
@@ -37,7 +44,7 @@ pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyT
             let target_chunk =
                 find_target_chunk_with_same_dimensions(target_tx, &source_chunk).await?;
 
-            Ok(Some(CopyTask {
+            Ok(Some(Task {
                 priority,
                 source_chunk,
                 target_chunk,
@@ -47,6 +54,16 @@ pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyT
         }
         None => Ok(None),
     }
+}
+
+pub async fn claim_copy_task(target_tx: &Transaction<'_>) -> Result<Option<CopyTask>> {
+    static CLAIM_COPY_TASK: &str = include_str!("claim_source_chunk_for_copy.sql");
+    claim_task(target_tx, CLAIM_COPY_TASK).await
+}
+
+pub async fn claim_verify_task(target_tx: &Transaction<'_>) -> Result<Option<VerifyTask>> {
+    static CLAIM_VERIFY_TASK: &str = include_str!("claim_source_chunk_for_verification.sql");
+    claim_task(target_tx, CLAIM_VERIFY_TASK).await
 }
 
 pub async fn find_target_chunk_with_same_dimensions(
@@ -85,6 +102,22 @@ pub async fn complete_copy_task(
     static COMPLETE_SOURCE_CHUNK: &str = include_str!("complete_source_chunk.sql");
     target_tx
         .execute(COMPLETE_SOURCE_CHUNK, &[&copy_task.priority, &copy_message])
+        .await?;
+    Ok(())
+}
+
+pub async fn complete_verify_task(
+    target_tx: &Transaction<'_>,
+    verify_task: &VerifyTask,
+    verify_message: &str,
+) -> Result<()> {
+    static COMPLETE_SOURCE_CHUNK_VERIFICATION: &str =
+        include_str!("complete_source_chunk_verification.sql");
+    target_tx
+        .execute(
+            COMPLETE_SOURCE_CHUNK_VERIFICATION,
+            &[&verify_task.priority, &verify_message],
+        )
         .await?;
     Ok(())
 }
@@ -178,26 +211,35 @@ pub async fn load_queue(
     Ok(())
 }
 
-async fn get_pending_task_count(client: &Client) -> Result<u64> {
-    let pending_task_count = client
-        .query_one(
-            "select count(*) from __backfill.task where worked is null",
-            &[],
-        )
-        .await?;
+async fn get_pending_task_count(client: &Client, task: &TaskType) -> Result<u64> {
+    let query: &str = match task {
+        TaskType::Copy => "select count(*) from __backfill.task where worked is null",
+        TaskType::Verify => {
+            "select count(*) from __backfill.task where verified is null and worked is not null"
+        }
+    };
+    let pending_task_count = client.query_one(query, &[]).await?;
     // NOTE: count(*) in postgres returns int8, which is an i64, but it will never be negative
     Ok(pending_task_count.get::<'_, _, i64>(0) as u64)
 }
 
-pub async fn get_and_assert_staged_task_count_greater_zero(target_config: &Config) -> Result<u64> {
+pub async fn get_and_assert_staged_task_count_greater_zero(
+    target_config: &Config,
+    task: TaskType,
+) -> Result<u64> {
     let target = Target::connect(target_config).await?;
     if !backfill_schema_exists(&target.client).await? {
         bail!("administrative schema `__backfill` not found. Run the `stage` command once before running `copy`.");
     }
-    let pending_task_count = get_pending_task_count(&target.client).await?;
+    let pending_task_count = get_pending_task_count(&target.client, &task).await?;
     if pending_task_count == 0 {
-        bail!("there are no pending copy tasks. Use the `stage` command to add more.");
-    }
+        match task {
+        TaskType::Copy => bail!("there are no pending copy tasks. Use the `stage` command to add more."),
+        TaskType::Verify => bail!(
+        "there are no pending verification tasks. If tasks are already staged, run the `copy` command to complete them for verification. Otherwise, use the `stage` command to add more copy tasks."
+        ),
+        };
+    };
     Ok(pending_task_count)
 }
 

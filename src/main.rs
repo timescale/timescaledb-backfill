@@ -1,6 +1,7 @@
 use crate::connect::{Source, Target};
 use crate::execute::TOTAL_BYTES_COPIED;
 use crate::logging::setup_logging;
+use crate::task::TaskType;
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -21,6 +22,7 @@ mod logging;
 mod sql;
 mod task;
 mod timescale;
+mod verify;
 mod workers;
 
 static CTRLC_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -87,6 +89,21 @@ pub struct CopyConfig {
 }
 
 #[derive(Parser, Debug)]
+pub struct VerifyConfig {
+    /// Connection string to the source database
+    #[arg(long)]
+    source: String,
+
+    /// Connection string to the target database
+    #[arg(long)]
+    target: String,
+
+    /// Parallelism for verification
+    #[arg(short, long, default_value_t = 8)]
+    parallelism: u8,
+}
+
+#[derive(Parser, Debug)]
 pub struct CleanConfig {
     /// Connection string to the target database
     #[arg(long)]
@@ -97,6 +114,7 @@ pub struct CleanConfig {
 pub enum Command {
     Stage(StageConfig),
     Copy(CopyConfig),
+    Verify(VerifyConfig),
     Clean(CleanConfig),
 }
 
@@ -137,7 +155,8 @@ async fn main() -> Result<()> {
             let target_config = Config::from_str(&args.target)?;
 
             let task_count =
-                task::get_and_assert_staged_task_count_greater_zero(&target_config).await?;
+                task::get_and_assert_staged_task_count_greater_zero(&target_config, TaskType::Copy)
+                    .await?;
 
             TERM.write_line(&format!(
                 "Copying {task_count} chunks with {} workers",
@@ -152,6 +171,7 @@ async fn main() -> Result<()> {
                 &target_config,
                 task_count,
                 receiver,
+                TaskType::Copy,
             )
             .await?;
 
@@ -162,6 +182,43 @@ async fn main() -> Result<()> {
                 PROCESSED_COUNT.load(Relaxed),
                 start.elapsed().human_duration()
             ))?;
+            Ok(())
+        }
+        Command::Verify(args) => {
+            let start = Instant::now();
+            let source_config = Config::from_str(&args.source)?;
+            let target_config = Config::from_str(&args.target)?;
+
+            let task_count = task::get_and_assert_staged_task_count_greater_zero(
+                &target_config,
+                TaskType::Verify,
+            )
+            .await?;
+
+            TERM.write_line(&format!(
+                "Verifying {task_count} chunks with {} workers",
+                args.parallelism
+            ))?;
+
+            let receiver = create_ctrl_c_handler().await?;
+
+            let pool = workers::Pool::new(
+                args.parallelism.into(),
+                &source_config,
+                &target_config,
+                task_count,
+                receiver,
+                TaskType::Verify,
+            )
+            .await?;
+
+            pool.join().await.with_context(|| "worker pool error")?;
+
+            TERM.write_line(&format!(
+                "Verifed {task_count} chunks in {}",
+                start.elapsed().human_duration(),
+            ))?;
+
             Ok(())
         }
         Command::Clean(args) => {

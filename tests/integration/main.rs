@@ -6,6 +6,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::process::Command;
+use strip_ansi_escapes::strip;
 use tap_reader::Tap;
 use test_common::*;
 use testcontainers::clients::Cli;
@@ -150,6 +151,11 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         .with_name("target");
 
     (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
+
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success();
 
     Ok(())
 }
@@ -927,5 +933,189 @@ fn duplicated_stage_task_is_skipped() -> Result<()> {
 
     target_dbassert.has_task_count(3);
 
+    Ok(())
+}
+
+fn stage_and_copy_a_single_chunk<C: HasConnectionString>(
+    source_container: &C,
+    target_container: &C,
+) -> Result<()> {
+    psql(source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    copy_skeleton_schema(source_container, target_container)?;
+    psql(
+        source_container,
+        PsqlInput::Sql(
+            r"
+        INSERT INTO metrics(time, device_id, val)
+        VALUES
+            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 7, 21)",
+        ),
+    )?;
+    run_backfill(TestConfigStage::new(
+        source_container,
+        target_container,
+        "2016-01-02T00:00:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("Staged 1 chunks to copy"));
+    run_backfill(TestConfigCopy::new(source_container, target_container))
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(contains(
+            r#"Copied chunk "_timescaledb_internal"."_hyper_1_1_chunk" in"#,
+        ));
+
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    source_dbassert.has_chunk_count("public", "metrics", 1);
+    target_dbassert.has_chunk_count("public", "metrics", 1);
+    Ok(())
+}
+
+#[test]
+fn verify_task_with_deleted_source_chunk() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    // Given a chunk that's staged and copied
+    stage_and_copy_a_single_chunk(&source_container, &target_container)?;
+
+    // When the source chunk is dropped
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        SELECT public.drop_chunks(
+            'public.metrics',
+            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month'
+        )",
+        ),
+    )?;
+
+    // Then verify will output a message saying that the chunk no longer exists
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(contains(
+            r#"source chunk "_timescaledb_internal"."_hyper_1_1_chunk" no longer exists"#,
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn verify_task_with_deleted_target_chunk() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    // Given a chunk that's staged and copied
+    stage_and_copy_a_single_chunk(&source_container, &target_container)?;
+
+    // When the target chunk is dropped
+    psql(
+        &target_container,
+        PsqlInput::Sql(
+            r"
+        SELECT public.drop_chunks(
+            'public.metrics',
+            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month'
+        )",
+        ),
+    )?;
+
+    // Then verify will output a message saying that the chunk no longer exists
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(contains(r#"target chunk does not exist"#));
+
+    Ok(())
+}
+
+#[test]
+fn verify_task_with_extra_rows_in_source() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    // Given a chunk that's staged and copied
+    stage_and_copy_a_single_chunk(&source_container, &target_container)?;
+
+    // When there's extra rows in the source table
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+        INSERT INTO metrics(time, device_id, val)
+        VALUES
+            ('2016-01-01T23:59:59Z'::timestamptz - INTERVAL '3 month', 1, 11),
+            ('2016-01-02T00:00:02Z'::timestamptz - INTERVAL '3 month', 8, 31)",
+        ),
+    )?;
+
+    let expected_diff = r#"Verifying 1 chunks with 8 workers
+[1/1] Chunk verification failed, source="_timescaledb_internal"."_hyper_1_1_chunk" target="_timescaledb_internal"."_hyper_1_1_chunk" diff
+```diff
+--- original
++++ modified
+@@ -1,14 +1,14 @@
+ min:
+-  device_id: '7'
+-  time: 2015-10-02 00:00:00+00
+-  val: '21'
++  device_id: '1'
++  time: 2015-10-01 23:59:59+00
++  val: '11'
+ max:
+-  device_id: '7'
+-  time: 2015-10-02 00:00:00+00
+-  val: '21'
++  device_id: '8'
++  time: 2015-10-02 00:00:02+00
++  val: '31'
+ sum: {}
+ count:
+-  device_id: 1
+-  time: 1
+-  val: 1
+-total_count: 1
++  device_id: 3
++  time: 3
++  val: 3
++total_count: 3
+```
+Verifed 1 chunks in"#;
+
+    // Then verify will output a message saying that the chunk no longer exists
+    let success = run_backfill(TestConfigVerify::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success();
+
+    // The output has some control characters for colors which make it hard to
+    // compare against.
+    let stripped_actual_output = String::from_utf8(strip(&success.get_output().stdout))?;
+    assert!(stripped_actual_output.contains(expected_diff));
     Ok(())
 }

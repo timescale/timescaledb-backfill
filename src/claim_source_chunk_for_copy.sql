@@ -1,6 +1,5 @@
 select
   priority
-, worked
 , chunk_schema
 , chunk_name
 , hypertable_schema
