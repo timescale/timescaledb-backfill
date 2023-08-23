@@ -1,4 +1,5 @@
 use crate::sql::quote_table_name;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt::Debug;
