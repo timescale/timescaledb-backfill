@@ -1,9 +1,12 @@
 use crate::connect::{Source, Target};
 use crate::execute::{chunk_exists, copy_chunk};
-use crate::task::{claim_copy_task, complete_copy_task};
+use crate::task::{
+    claim_copy_task, claim_verify_task, complete_copy_task, complete_verify_task, TaskType,
+};
+use crate::verify::{verify_chunk_data, VerificationError};
 use crate::workers::TaskResult::{NoItem, Processed};
 use crate::TERM;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use human_repr::{HumanDuration, HumanThroughput};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -47,6 +50,7 @@ impl Pool {
         target_config: &Config,
         task_count: u64,
         shutdown: UnboundedReceiver<PoolMessage>,
+        task: TaskType,
     ) -> Result<Self> {
         let mut pool = Self {
             num_workers,
@@ -73,7 +77,8 @@ impl Pool {
                 hard_shutdown.clone(),
             )
             .await?;
-            pool.tasks.spawn(async move { worker.run().await });
+            let task_type = task.clone();
+            pool.tasks.spawn(async move { worker.run(task_type).await });
         }
 
         Ok(pool)
@@ -155,7 +160,7 @@ impl Worker {
     }
 
     /// Execution loop of a worker.
-    pub async fn run(self) -> Result<WorkerResult> {
+    pub async fn run(self, task: TaskType) -> Result<WorkerResult> {
         let hard_shutdown = &self.hard_shutdown;
         let graceful_shutdown = self.graceful_shutdown;
         let source = self.source;
@@ -168,7 +173,7 @@ impl Worker {
                 Ok(WorkerResult::HardShutdown)
             },
             // Note: we spawn run_inner as a separate task, to prevent it from blocking this select.
-            res = tokio::spawn(Self::run_inner(graceful_shutdown.clone(), source, target, task_count)) => {
+            res = tokio::spawn(Self::run_inner(graceful_shutdown.clone(), source, target, task_count, task)) => {
                 res?
             }
         }
@@ -179,13 +184,21 @@ impl Worker {
         mut source: Source,
         mut target: Target,
         task_count: u64,
+        task: TaskType,
     ) -> Result<WorkerResult> {
         loop {
             if graceful_shutdown.0.is_cancelled() {
                 debug!("worker received shutdown signal");
                 return Ok(WorkerResult::GracefulShutdown);
             } else {
-                let result = Self::process_task(&mut source, &mut target, task_count).await?;
+                let result = match task {
+                    TaskType::Copy => {
+                        Self::process_copy_task(&mut source, &mut target, task_count).await?
+                    }
+                    TaskType::Verify => {
+                        Self::process_verify_task(&mut source, &mut target, task_count).await?
+                    }
+                };
                 if result == NoItem {
                     debug!("worker has no more work to do, stopping");
                     break;
@@ -195,9 +208,9 @@ impl Worker {
         Ok(WorkerResult::Complete)
     }
 
-    /// Processes a task in the target database's task queue. When no tasks are
-    /// available in the task queue, returns `TaskResult::NoItem`.
-    async fn process_task(
+    /// Processes a Copy task in the target database's task queue. When no
+    /// tasks are available in the task queue, returns `TaskResult::NoItem`.
+    async fn process_copy_task(
         source: &mut Source,
         target: &mut Target,
         task_count: u64,
@@ -250,6 +263,52 @@ impl Worker {
                     prev + 1,
                     task_count,
                     copy_result_message
+                ))?;
+                Processed
+            }
+        };
+        target_tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Processes a Verify task in the target database's task queue. When no
+    /// tasks are available in the task queue, returns `TaskResult::NoItem`.
+    async fn process_verify_task(
+        source: &mut Source,
+        target: &mut Target,
+        task_count: u64,
+    ) -> Result<TaskResult> {
+        let target_tx = target.client.transaction().await?;
+        let result = match claim_verify_task(&target_tx)
+            .await
+            .with_context(|| "error claiming verify task")?
+        {
+            None => NoItem,
+            Some(verify_task) => {
+                let start = Instant::now();
+                let source_tx = source.transaction().await?;
+                let verify_message =
+                    match verify_chunk_data(&source_tx, &target_tx, &verify_task).await {
+                        Ok(_) => format!(
+                            "Verified chunk {} in {}",
+                            verify_task.source_chunk.quoted_name(),
+                            start.elapsed().human_duration()
+                        ),
+                        Err(error) => match error.downcast_ref::<VerificationError>() {
+                            Some(e) => format!("{}", e),
+                            None => bail!(error),
+                        },
+                    };
+                complete_verify_task(&target_tx, &verify_task, &verify_message).await?;
+                source_tx.commit().await?;
+
+                let prev = PROCESSED_COUNT.fetch_add(1, Ordering::Relaxed);
+
+                TERM.write_line(&format!(
+                    "[{}/{}] {}",
+                    prev + 1,
+                    task_count,
+                    &verify_message,
                 ))?;
                 Processed
             }
