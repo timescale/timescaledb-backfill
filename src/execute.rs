@@ -715,6 +715,7 @@ SELECT EXISTS (
   FROM _timescaledb_catalog.chunk
   WHERE schema_name = $1
     AND table_name = $2
+    AND dropped = false
 )
 "#;
     let exists = client
