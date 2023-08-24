@@ -76,5 +76,6 @@ inner join _timescaledb_catalog.dimension_slice ds
 on (d.id = ds.dimension_id and ds.range_start <= d.filter_value)
 inner join _timescaledb_catalog.chunk_constraint cc on (ds.id = cc.dimension_slice_id)
 inner join _timescaledb_catalog.chunk c on (cc.chunk_id = c.id and h.id = c.hypertable_id)
+where c.dropped = false
 order by ds.range_start desc
 ;

@@ -452,9 +452,10 @@ SELECT EXISTS (
     fn _get_chunk_count(&mut self, schema: &str, table: &str) -> Result<i64> {
         let row = self.connection().query_one(
             r#"
-            SELECT count(*) FROM timescaledb_information.chunks
-            WHERE hypertable_schema = $1
-              AND hypertable_name = $2"#,
+            SELECT count(*) FROM _timescaledb_catalog.chunk c
+            JOIN _timescaledb_catalog.hypertable h ON c.hypertable_id = h.id
+            WHERE h.schema_name = $1
+              AND h.table_name = $2"#,
             &[&schema, &table],
         )?;
         Ok(row.get("count"))

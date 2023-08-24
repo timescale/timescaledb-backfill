@@ -801,8 +801,58 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
         .unwrap()
         .with_name("target");
 
-    source_dbassert.has_chunk_count("public", "metrics", 1);
+    source_dbassert.has_chunk_count("public", "metrics", 3);
     target_dbassert.has_chunk_count("public", "metrics", 1);
+
+    Ok(())
+}
+
+#[test]
+fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    psql(
+        &source_container,
+        vec![
+            PsqlInput::Sql(SETUP_HYPERTABLE),
+            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
+            // Given 3 chunks
+            PsqlInput::Sql(
+                r"
+            INSERT INTO metrics(time, device_id, val)
+            VALUES
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '6 month', 88, 43),
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
+            ),
+            // Mark two of three chunks as dropped
+            PsqlInput::Sql(
+                r"SELECT public.drop_chunks(
+            'public.metrics',
+            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month')
+            ",
+            ),
+        ],
+    )?;
+
+    DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .has_chunk_count("public", "metrics", 3);
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2016-01-02T00:00:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("Staged 1 chunks to copy"));
 
     Ok(())
 }
