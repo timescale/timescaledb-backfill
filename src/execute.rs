@@ -309,7 +309,15 @@ async fn create_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> 
             r"
         SELECT hypertable_id
         FROM _timescaledb_catalog.chunk
-        WHERE format('%I.%I', schema_name, table_name)::regclass = $1::text::regclass
+        -- Note: There is non-obvious stuff going on here.
+        -- The ::text::regclass::text cast dance reformats the relation name to
+        -- the database's canonical format. We _explicitly avoid_ casting the
+        -- left hand side to regclass, because the _timescaledb_catalog.chunk
+        -- table contains entries which refer to non-existent relations. This
+        -- only happens when the hypertable has a continuous aggregate on it,
+        -- and the chunk was dropped.
+        -- Casting the non-existent relation to regclass throws an error.
+        WHERE format('%I.%I', schema_name, table_name)::text = $1::text::regclass::text
     ",
             &[&chunk_name],
         )
