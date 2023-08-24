@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/timescale/timescaledb-backfill/compare/v0.2.1...v0.2.2) (2023-08-24)
+
+
+### Bug Fixes
+
+* skip dropped chunks on a hypertable with continuous aggregate ([4612ed7](https://github.com/timescale/timescaledb-backfill/commit/4612ed7ecb4d917db53d85c5aac6454fdeb389b0))
+
 ## [0.2.1](https://github.com/timescale/timescaledb-backfill/compare/v0.2.0...v0.2.1) (2023-08-23)
 
 
