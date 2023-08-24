@@ -506,7 +506,7 @@ fn copy_without_stage_error() -> Result<()> {
     .unwrap()
     .assert()
     .failure()
-    .stderr(predicate::str::contains(
+    .stderr(contains(
             "Error: administrative schema `__backfill` not found. Run the `stage` command once before running `copy`."
         ));
 
@@ -535,7 +535,7 @@ fn copy_without_available_tasks_error() -> Result<()> {
         .unwrap()
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
+        .stderr(contains(
             "there are no pending copy tasks. Use the `stage` command to add more.",
         ));
 
@@ -740,17 +740,28 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     let target_container = docker.run(timescaledb(pg_version()));
 
     // Given 2 chunks
-    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        vec![
+            PsqlInput::Sql(SETUP_HYPERTABLE),
+            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
+            PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+        ],
+    )?;
     copy_skeleton_schema(&source_container, &target_container)?;
     psql(
         &source_container,
-        PsqlInput::Sql(
-            r"
-        INSERT INTO metrics(time, device_id, val)
-        VALUES
-            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
-            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
-        ),
+        vec![
+            PsqlInput::Sql(
+                r"
+            INSERT INTO metrics(time, device_id, val)
+            VALUES
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '6 month', 88, 43),
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
+                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
+            ),
+            PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+        ],
     )?;
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -760,7 +771,7 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     .unwrap()
     .assert()
     .success()
-    .stdout(contains("Staged 2 chunks to copy"));
+    .stdout(contains("Staged 3 chunks to copy"));
 
     // When we delete a chunk that has already been staged
     psql(
@@ -779,12 +790,9 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
         .unwrap()
         .assert()
         .success()
-        .stdout(contains(
-            r#"Skipping chunk "_timescaledb_internal"."_hyper_1_1_chunk" because it no longer exists on source"#,
-        )).stdout(
-       contains(
-            r#"Copied chunk "_timescaledb_internal"."_hyper_1_2_chunk" in"#,
-        ));
+        .stdout(contains(r#"Skipping chunk "_timescaledb_internal"."_hyper_1_1_chunk" because it no longer exists on source"#,)
+            .and(contains(r#"Skipping chunk "_timescaledb_internal"."_hyper_1_2_chunk" because it no longer exists on source"#)
+                .and(contains(r#"Copied chunk "_timescaledb_internal"."_hyper_1_3_chunk" in"#))));
 
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
         .unwrap()
