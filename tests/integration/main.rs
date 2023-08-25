@@ -166,7 +166,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5);
@@ -187,7 +187,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
@@ -241,7 +241,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
@@ -266,7 +266,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_JUNE)],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 1464)
                         .has_chunk_count("public", "metrics", 10);
@@ -287,7 +287,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![PsqlInput::Sql(COMPRESS_ONE_CHUNK),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
@@ -309,7 +309,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 50400)
                         .has_chunk_count("public", "metrics", 7)
@@ -332,7 +332,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 50400)
                         .has_chunk_count("public", "metrics", 105)
@@ -434,7 +434,7 @@ generate_tests!(
             ],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 1488)
                         .has_chunk_count("public", "metrics", 5)
@@ -456,7 +456,7 @@ generate_tests!(
             post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_MAY),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
-                for dbassert in vec![source, target] {
+                for dbassert in [source, target] {
                     dbassert
                         .has_table_count("public", "metrics", 1488)
                         .has_chunk_count("public", "metrics", 5)
