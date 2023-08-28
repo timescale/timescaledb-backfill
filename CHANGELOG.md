@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/timescale/timescaledb-backfill/compare/v0.2.2...v0.3.0) (2023-08-28)
+
+
+### Features
+
+* add verify command to compare chunks ([86c9e66](https://github.com/timescale/timescaledb-backfill/commit/86c9e662ba521464b69d09ba78f11d37dd8738db))
+
+
+### Bug Fixes
+
+* do not cast non-existent relations to regclass ([243afe1](https://github.com/timescale/timescaledb-backfill/commit/243afe1cc5d18c9eb66ac6b53833b2af2bd6e96d))
+* do not stage chunks marked as dropped ([a363f00](https://github.com/timescale/timescaledb-backfill/commit/a363f0000293a7d51375fd1b8477a65ef81e8d4b))
+* multiple stage runs duplicates the tasks ([801aebe](https://github.com/timescale/timescaledb-backfill/commit/801aebe0f61eaf9ca0f47792b48159a195a63b1b))
+* update src/main.rs ([86c9e66](https://github.com/timescale/timescaledb-backfill/commit/86c9e662ba521464b69d09ba78f11d37dd8738db))
+* update src/verify.rs ([86c9e66](https://github.com/timescale/timescaledb-backfill/commit/86c9e662ba521464b69d09ba78f11d37dd8738db))
+
+
+### Miscellaneous
+
+* bump to 1.72.0 rust compiler in CI ([e8b2a72](https://github.com/timescale/timescaledb-backfill/commit/e8b2a72229b92f808f52324b3d223752387ab20e))
+* optimise binary and symbols size ([3cb3c3b](https://github.com/timescale/timescaledb-backfill/commit/3cb3c3bb73a09808bd5ecd5b2dc4c5f3a45c6c90))
+
 ## [0.2.2](https://github.com/timescale/timescaledb-backfill/compare/v0.2.1...v0.2.2) (2023-08-24)
 
 
