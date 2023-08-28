@@ -1119,3 +1119,50 @@ Verifed 1 chunks in"#;
     assert!(stripped_actual_output.contains(expected_diff));
     Ok(())
 }
+
+macro_rules! generate_arg_validation_filter_fail_test {
+    ($(($func:ident, $testcase:expr),)*) => {
+        $(
+            #[test]
+            fn $func() -> Result<()> {
+                arg_validation_filter_fail($testcase)
+            }
+        )*
+    }
+}
+
+generate_arg_validation_filter_fail_test!(
+    (validate_filter_unbalanced_parenthesis, "a(b(c]d)e"),
+    (validate_filter_unmatched_bracket, "[ab"),
+    (validate_filter_unmatched_curly_braces, "{ab"),
+    (validate_filter_missing_escape_sequence, "\\"),
+    (validate_filter_invalid_range, "[z-a]"),
+    (validate_filter_misplaced_quantifier, "?"),
+    (validate_filter_lone_escape_char, r"\"),
+    (validate_filter_non_terminated_group, "(abc"),
+    (
+        validate_filter_invalid_escape_inside_characted_class,
+        "[\\]"
+    ),
+);
+
+fn arg_validation_filter_fail(filter: &str) -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    run_backfill(
+        TestConfigStage::new(
+            &TestConnectionString::default(),
+            &TestConnectionString::default(),
+            "2021-30-04T00:00:00Z",
+        )
+        .with_filter(filter),
+    )
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(contains(format!(
+        "invalid value '{filter}' for '--filter <TABLE_FILTER>': regex parse error"
+    )));
+
+    Ok(())
+}

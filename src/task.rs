@@ -2,6 +2,7 @@ use crate::connect::{Source, Target};
 use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Context, Result};
+use regex::Regex;
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
 
@@ -148,7 +149,7 @@ async fn init_schema(target: &mut Target) -> Result<()> {
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
-    table_filter: Option<String>,
+    table_filter: Option<Regex>,
     until: String,
     snapshot: Option<String>,
 ) -> Result<()> {
@@ -158,10 +159,7 @@ pub async fn load_queue(
     static FIND_SOURCE_CHUNKS: &str = include_str!("find_source_chunks.sql");
     let source_tx = source.transaction().await?;
     let rows = source_tx
-        .query(FIND_SOURCE_CHUNKS, &[&table_filter, &until])
-        // TODO: determine if the problem is with until or filter and show a better error.
-        // until error if it's a string - ERROR: invalid input syntax for type bigint: "hello"
-        // filter error if it's an invalid regex. Eg `filter=[(` - ERROR: invalid regular expression: brackets [] not balanced
+        .query(FIND_SOURCE_CHUNKS, &[&table_filter.map(|e| e.as_str().to_owned()), &until])
         .await.with_context(|| "failed to find hypertable/chunks in source. DB invalid errors might be related to the `until` and `filter` flags.")?;
 
     let chunk_count = rows.len();

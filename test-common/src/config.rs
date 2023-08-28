@@ -147,6 +147,7 @@ pub struct TestConfigStage {
     source: TestConnectionString,
     target: TestConnectionString,
     until: String,
+    filter: Option<String>,
 }
 
 impl TestConfigStage {
@@ -159,20 +160,34 @@ impl TestConfigStage {
             source: source.connection_string(),
             target: target.connection_string(),
             until: until.to_string(),
+            filter: None,
+        }
+    }
+
+    pub fn with_filter(&self, filter: &str) -> Self {
+        Self {
+            filter: Some(filter.into()),
+            ..self.clone()
         }
     }
 }
 
 impl TestConfig for TestConfigStage {
     fn args(&self) -> Vec<OsString> {
-        vec![
+        let mut args = vec![
             OsString::from("--source"),
             OsString::from(self.source.as_str()),
             OsString::from("--target"),
             OsString::from(self.target.as_str()),
             OsString::from("--until"),
             OsString::from(&self.until),
-        ]
+        ];
+
+        if let Some(filter) = self.filter.as_ref() {
+            args.extend_from_slice(&["--filter".into(), OsString::from(filter)]);
+        }
+
+        args
     }
 
     fn action(&self) -> &str {

@@ -8,6 +8,7 @@ use clap::Parser;
 use console::Term;
 use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
+use regex::Regex;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
@@ -66,7 +67,7 @@ pub struct StageConfig {
 
     /// Posix regular expression used to match `schema.table` for hypertables
     #[arg(short, long = "filter")]
-    table_filter: Option<String>,
+    table_filter: Option<Regex>,
 
     /// A postgres snapshot exported from source to use when copying
     #[arg(short, long)]
