@@ -2,6 +2,7 @@ use crate::connect::{Source, Target};
 use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Context, Result};
+use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
 
@@ -145,6 +146,22 @@ async fn init_schema(target: &mut Target) -> Result<()> {
     Ok(())
 }
 
+async fn check_filter(source: &mut Source, table_filter: String) -> Result<()> {
+    let source_tx = source.transaction().await?;
+    let x = source_tx
+        .query(
+            "select regexp_like('this is only a test', $1::text)",
+            &[&table_filter],
+        )
+        .await;
+    if x.is_err()
+        && x.unwrap_err().code().unwrap().code() == SqlState::INVALID_REGULAR_EXPRESSION.code()
+    {
+        bail!("filter argument '{table_filter}' is not a valid regular expression");
+    }
+    Ok(())
+}
+
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
@@ -152,6 +169,10 @@ pub async fn load_queue(
     until: String,
     snapshot: Option<String>,
 ) -> Result<()> {
+    if table_filter.is_some() {
+        check_filter(source, table_filter.clone().unwrap()).await?;
+    }
+
     init_schema(target).await?;
 
     let target_tx = target.client.transaction().await?;
