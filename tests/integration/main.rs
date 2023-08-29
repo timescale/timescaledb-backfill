@@ -73,6 +73,21 @@ static ADD_SPACE_DIMENSION_TO_HYPERTABLE: &str = r"
     SELECT add_dimension('public.metrics', 'device_id', number_partitions => 15)
 ";
 
+static SETUP_OTHER_HYPERTABLE: &str = r"
+    CREATE SCHEMA other;
+    CREATE TABLE other.metrics(
+        time TIMESTAMPTZ,
+        device_id TEXT,
+        val FLOAT8);
+    SELECT create_hypertable('other.metrics', 'time');
+";
+
+static INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY: &str = r"
+    INSERT INTO other.metrics (time, device_id, val)
+    SELECT time, 1, random()
+    FROM generate_series('2023-05-01T00:00:00Z'::timestamptz, '2023-05-31T23:30:00Z'::timestamptz, '1 hour'::interval) time;
+";
+
 #[derive(Debug)]
 struct TestCase<'a, S, F>
 where
@@ -81,6 +96,7 @@ where
 {
     setup_sql: Vec<PsqlInput<S>>,
     completion_time: &'a str,
+    filter: Option<String>,
     post_skeleton_source_sql: Vec<PsqlInput<S>>,
     post_skeleton_target_sql: Vec<PsqlInput<S>>,
     asserts: Box<F>,
@@ -129,14 +145,17 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         psql(&target_container, sql)?;
     }
 
-    run_backfill(TestConfigStage::new(
+    let mut stage_config = TestConfigStage::new(
         &source_container,
         &target_container,
         test_case.completion_time,
-    ))
-    .unwrap()
-    .assert()
-    .success();
+    );
+
+    if let Some(filter) = test_case.filter {
+        stage_config = stage_config.with_filter(&filter);
+    }
+
+    run_backfill(stage_config).unwrap().assert().success();
 
     run_backfill(TestConfigCopy::new(&source_container, &target_container))
         .unwrap()
@@ -178,6 +197,63 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5);
                 }
             }),
+            filter: None,
+        }
+    ),
+    (
+        copy_data_from_chunks_filter_table,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-06-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("other", "metrics", 744)
+                    .has_chunk_count("other", "metrics", 5);
+                target
+                    .has_table_count("other", "metrics", 0)
+                    .has_chunk_count("other", "metrics", 5);
+                for dbassert in [source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5);
+                }
+            }),
+            filter: Some("public.metrics".into()),
+        }
+    ),
+    (
+        copy_data_from_chunks_filter_schema,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-06-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("other", "metrics", 744)
+                    .has_chunk_count("other", "metrics", 5);
+                target
+                    .has_table_count("other", "metrics", 0)
+                    .has_chunk_count("other", "metrics", 5);
+                for dbassert in [source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5);
+                }
+            }),
+            filter: Some("public.*".into()),
         }
     ),
     (
@@ -200,6 +276,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -232,6 +309,7 @@ generate_tests!(
                     .has_table_count("public", "metrics", 984)
                     .has_chunk_count("public", "metrics", 7);
             }),
+            filter: None,
         }
     ),
     (
@@ -259,6 +337,7 @@ generate_tests!(
                         );
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -278,6 +357,7 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 10);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -300,6 +380,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 2);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -322,6 +403,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -345,6 +427,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -369,6 +452,7 @@ generate_tests!(
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
             }),
+            filter: None,
         }
     ),
     (
@@ -392,6 +476,7 @@ generate_tests!(
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 1);
             }),
+            filter: None,
         }
     ),
     (
@@ -423,6 +508,7 @@ generate_tests!(
                     .has_compressed_chunk_count("public", "metrics", 5);
                 target.has_table_count("public", "metrics", 144);
             }),
+            filter: None,
         }
     ),
     (
@@ -447,6 +533,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -469,6 +556,7 @@ generate_tests!(
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
             }),
+            filter: None,
         }
     ),
     (
@@ -493,6 +581,7 @@ generate_tests!(
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 0);
             }),
+            filter: None,
         }
     ),
 );
