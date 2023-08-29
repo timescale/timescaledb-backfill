@@ -2,8 +2,8 @@ use crate::execute::CopyMode::UncompressedOnly;
 use crate::sql::quote_table_name;
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
-    Chunk, CompressedChunk, CompressionSize, SourceChunk, SourceCompressedChunk, TargetChunk,
-    TargetCompressedChunk,
+    set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, SourceChunk,
+    SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
 };
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
@@ -324,12 +324,16 @@ async fn create_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> 
         .await?
         .get("hypertable_id");
 
-    tx.execute(&format!(r"
-        CREATE TRIGGER ts_cagg_invalidation_trigger
-        AFTER INSERT OR DELETE OR UPDATE ON {chunk_name}
-        FOR EACH ROW
-        EXECUTE FUNCTION _timescaledb_internal.continuous_agg_invalidation_trigger('{hypertable_id}')
-    "), &[]).await?;
+    tx.execute(
+        &set_query_target_proc_schema(&format!(
+            r"CREATE TRIGGER ts_cagg_invalidation_trigger
+            AFTER INSERT OR DELETE OR UPDATE ON {chunk_name}
+            FOR EACH ROW
+            EXECUTE FUNCTION @extschema@.continuous_agg_invalidation_trigger('{hypertable_id}')"
+        )),
+        &[],
+    )
+    .await?;
     Ok(())
 }
 
@@ -485,12 +489,11 @@ async fn create_uncompressed_chunk(
     );
 
     tx.execute(
-        r#"
-SELECT _timescaledb_internal.create_chunk(
-    $1::text::regclass,
-    slices => $2::TEXT::JSONB
-)
-"#,
+        &set_query_target_proc_schema(
+            r#"SELECT @extschema@.create_chunk(
+            $1::text::regclass,
+            slices => $2::TEXT::JSONB)"#,
+        ),
         &[
             &quote_table_name(
                 &source_chunk.hypertable.schema,
@@ -515,7 +518,7 @@ SELECT _timescaledb_internal.create_chunk(
 /// constraints and triggers. To convert the table into a proper compressed
 /// chunk, first the compressed data has to be inserted into it, then it needs
 /// to be passed as argument to the
-/// `_timescaledb_internal.create_compressed_chunk` function.
+/// `_timescaledb_functions.create_compressed_chunk` function.
 ///
 /// Trying to generate the same chunk name as TimescaleDB (TS) might produce
 /// inconsistencies because TS uses the chunk ID as part of the name. Since we
@@ -632,7 +635,7 @@ WHERE
     Ok(quote_table_name(&schema_name, &table_name))
 }
 
-/// Uses `_timescaledb_internal.create_compressed_chunk` to convert the
+/// Uses `_timescaledb_functions.create_compressed_chunk` to convert the
 /// `target_data_table` into a compressed chunk of `target_chunk`.
 ///
 /// This takes care of creating the triggers, indexes and constraints missing
@@ -649,15 +652,14 @@ async fn create_compressed_chunk_from_data_table(
     target_data_table: &TargetCompressedChunk,
 ) -> Result<()> {
     let compression_size = fetch_compression_size(source_tx, source_compressed_chunk).await?;
-
+    let query = r#"
+        SELECT @extschema@.create_compressed_chunk(
+            $1::TEXT::REGCLASS,
+            $2::TEXT::REGCLASS,
+            $3,$4,$5,$6,$7,$8,$9,$10)"#;
     target_tx
         .execute(
-            r#"
-SELECT _timescaledb_internal.create_compressed_chunk(
-    $1::TEXT::REGCLASS,
-    $2::TEXT::REGCLASS,
-    $3,$4,$5,$6,$7,$8,$9,$10)
-    "#,
+            &set_query_target_proc_schema(query),
             &[
                 &target_chunk.quoted_name(),
                 &target_data_table.quoted_name(),

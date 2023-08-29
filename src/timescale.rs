@@ -1,8 +1,64 @@
-use crate::sql::quote_table_name;
-use anyhow::Result;
+use crate::{
+    connect::{Source, Target},
+    sql::quote_table_name,
+};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::OnceLock};
+use tokio_postgres::GenericClient;
+
+static SOURCE_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
+static TARGET_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
+static EXTSCHEMA: &str = "@extschema@";
+
+pub async fn initialize_source_proc_schema(source: &mut Source) -> Result<()> {
+    let tx = source.transaction().await?;
+    let schema = fetch_proc_schema(&tx).await?;
+    SOURCE_PROC_SCHEMA
+        .set(schema)
+        .map_err(|e| anyhow!("source proc schema already set to {}", e))?;
+    Ok(())
+}
+
+pub async fn initialize_target_proc_schema(target: &Target) -> Result<()> {
+    let schema = fetch_proc_schema(&target.client).await?;
+    TARGET_PROC_SCHEMA
+        .set(schema)
+        .map_err(|e| anyhow!("target proc schema already set to {}", e))?;
+    Ok(())
+}
+
+async fn fetch_proc_schema<T>(client: &T) -> Result<String>
+where
+    T: GenericClient,
+{
+    let query = r"
+    SELECT pronamespace::regnamespace::text
+    FROM pg_proc
+    WHERE
+        proname = 'create_chunk' AND
+        pronamespace::regnamespace::text IN ('_timescaledb_internal','_timescaledb_functions')
+    ";
+    let row = client.query_one(query, &[]).await?;
+
+    let schema: String = row.get(0);
+    Ok(schema)
+}
+
+pub fn set_query_source_proc_schema(query: &str) -> String {
+    let schema = SOURCE_PROC_SCHEMA
+        .get()
+        .expect("source proc schema is not set");
+    query.replace(EXTSCHEMA, schema)
+}
+
+pub fn set_query_target_proc_schema(query: &str) -> String {
+    let schema = TARGET_PROC_SCHEMA
+        .get()
+        .expect("target proc schema is not set");
+    query.replace(EXTSCHEMA, schema)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DimensionRange {
@@ -33,7 +89,7 @@ pub type TargetChunk = Chunk;
 
 impl Chunk {
     /// Returns the slices (dimensions) of the Chunk, in the format required
-    /// by the `_timescaledb_internal.create_chunk` function.
+    /// by the `_timescaledb_functions.create_chunk` function.
     ///
     /// ```
     /// {

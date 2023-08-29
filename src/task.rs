@@ -1,5 +1,5 @@
 use crate::connect::{Source, Target};
-use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
+use crate::timescale::{set_query_source_proc_schema, Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Result};
 use tokio_postgres::error::SqlState;
@@ -210,12 +210,10 @@ pub async fn load_queue(
 
     let target_tx = target.client.transaction().await?;
     static FIND_SOURCE_CHUNKS: &str = include_str!("find_source_chunks.sql");
+    let query = set_query_source_proc_schema(FIND_SOURCE_CHUNKS);
     let source_tx = source.transaction().await?;
 
-    let rows = match source_tx
-        .query(FIND_SOURCE_CHUNKS, &[&table_filter, &until])
-        .await
-    {
+    let rows = match source_tx.query(&query, &[&table_filter, &until]).await {
         Ok(rows) => rows,
         Err(err) => {
             let dberr = err.as_db_error().unwrap();
@@ -291,10 +289,9 @@ async fn get_pending_task_count(client: &Client, task: &TaskType) -> Result<u64>
 }
 
 pub async fn get_and_assert_staged_task_count_greater_zero(
-    target_config: &Config,
+    target: &Target,
     task: TaskType,
 ) -> Result<u64> {
-    let target = Target::connect(target_config).await?;
     if !backfill_schema_exists(&target.client).await? {
         bail!("administrative schema `__backfill` not found. Run the `stage` command once before running `copy`.");
     }

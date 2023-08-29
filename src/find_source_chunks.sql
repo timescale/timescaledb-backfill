@@ -1,8 +1,10 @@
--- TODO: do we need to migrate the HT and then the CAGG? We are already
--- dropping the triggers so it might not make a difference.
 /*
 $1 is a case insensitive posix regular expression filtering on hypertable schema.table
 $2 is a string that represents the upper bound on "time" dimension values
+
+TimescaleDB 2.12 changed the schema where internal functions are installed from
+_timescaledb_internal to _timescaledb_functions, to support both we add the
+@extschema@ placeholder and replace it before running the query.
 */
 select
   c.schema_name as chunk_schema
@@ -45,13 +47,13 @@ inner join lateral
     , d.column_type
     , case
         when d.column_type = 'timestamp'::regtype then
-            _timescaledb_internal.time_to_internal($2::text::timestamp)
+            @extschema@.time_to_internal($2::text::timestamp)
         when d.column_type = 'timestamptz'::regtype then
-            _timescaledb_internal.time_to_internal($2::text::timestamptz)
+            @extschema@.time_to_internal($2::text::timestamptz)
         when d.column_type = 'date'::regtype then
-            _timescaledb_internal.time_to_internal($2::text::date)
+            @extschema@.time_to_internal($2::text::date)
         when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $2::text ~ '^[0-9]+$' then
-            _timescaledb_internal.time_to_internal(cast($2::text as bigint))
+            @extschema@.time_to_internal(cast($2::text as bigint))
       end as filter_value
     , case
         when d.column_type = 'timestamp'::regtype then

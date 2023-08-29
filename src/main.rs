@@ -2,6 +2,7 @@ use crate::connect::{Source, Target};
 use crate::execute::TOTAL_BYTES_COPIED;
 use crate::logging::setup_logging;
 use crate::task::TaskType;
+use crate::timescale::{initialize_source_proc_schema, initialize_target_proc_schema};
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -140,6 +141,9 @@ async fn main() -> Result<()> {
             let mut source = Source::connect(&source_config).await?;
             let mut target = Target::connect(&target_config).await?;
 
+            initialize_source_proc_schema(&mut source).await?;
+            initialize_target_proc_schema(&target).await?;
+
             task::load_queue(
                 &mut source,
                 &mut target,
@@ -154,9 +158,19 @@ async fn main() -> Result<()> {
             let source_config = Config::from_str(&args.source)?;
             let target_config = Config::from_str(&args.target)?;
 
-            let task_count =
-                task::get_and_assert_staged_task_count_greater_zero(&target_config, TaskType::Copy)
-                    .await?;
+            // Enclose DB clients in a new block to ensure they go out of scope
+            // as soon as possible. This helps to drop the database connections
+            // promptly.
+            {
+                let mut source = Source::connect(&source_config).await?;
+                initialize_source_proc_schema(&mut source).await?;
+            }
+
+            let task_count = {
+                let target = Target::connect(&target_config).await?;
+                initialize_target_proc_schema(&target).await?;
+                task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
+            };
 
             TERM.write_line(&format!(
                 "Copying {task_count} chunks with {} workers",
@@ -189,11 +203,20 @@ async fn main() -> Result<()> {
             let source_config = Config::from_str(&args.source)?;
             let target_config = Config::from_str(&args.target)?;
 
-            let task_count = task::get_and_assert_staged_task_count_greater_zero(
-                &target_config,
-                TaskType::Verify,
-            )
-            .await?;
+            // Enclose DB clients in a new block to ensure they go out of scope
+            // as soon as possible. This helps to drop the database connections
+            // promptly.
+            {
+                let mut source = Source::connect(&source_config).await?;
+                initialize_source_proc_schema(&mut source).await?;
+            }
+
+            let task_count = {
+                let target = Target::connect(&target_config).await?;
+                initialize_target_proc_schema(&target).await?;
+                task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Verify)
+                    .await?
+            };
 
             TERM.write_line(&format!(
                 "Verifying {task_count} chunks with {} workers",
