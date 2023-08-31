@@ -19,7 +19,7 @@ jobs:
       - uses: google-github-actions/release-please-action@v3
         id: release
         with:
-          token: ${{ secrets.ORG_AUTOMATION_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           release-type: rust
           bump-minor-pre-major: true # for pre-1.0.0, breaking changes are a minor bump
           pull-request-header: ":robot: Release ready"
