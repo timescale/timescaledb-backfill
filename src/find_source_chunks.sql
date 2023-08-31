@@ -44,8 +44,6 @@ inner join lateral
     , d.column_name
     , d.column_type
     , case
-        when d.column_type = 'tstzrange'::regtype then
-            _timescaledb_internal.time_to_internal($2::text::timestamptz)
         when d.column_type = 'timestamp'::regtype then
             _timescaledb_internal.time_to_internal($2::text::timestamp)
         when d.column_type = 'timestamptz'::regtype then
@@ -56,8 +54,6 @@ inner join lateral
             _timescaledb_internal.time_to_internal(cast($2::text as bigint))
       end as filter_value
     , case
-        when d.column_type = 'tstzrange'::regtype then
-            format('%L', $2::text::timestamptz)
         when d.column_type = 'timestamp'::regtype then
             format('%L', $2::text::timestamp)
         when d.column_type = 'timestamptz'::regtype then
