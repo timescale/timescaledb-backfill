@@ -1,7 +1,7 @@
 use crate::connect::{Source, Target};
 use crate::timescale::{Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
@@ -162,6 +162,38 @@ async fn check_filter(source: &mut Source, table_filter: String) -> Result<()> {
     Ok(())
 }
 
+async fn check_until(source: &mut Source, until: &String) -> Result<()> {
+    let mut err_count = 0;
+    {
+        let source_tx = source.transaction().await?;
+        let x = source_tx.query("select $1::text::bigint", &[&until]).await;
+        if x.is_err()
+            && x.unwrap_err().code().unwrap().code() == SqlState::INVALID_TEXT_REPRESENTATION.code()
+        {
+            err_count += 1;
+        }
+    }
+    {
+        let source_tx = source.transaction().await?;
+        let x = source_tx
+            .query("select $1::text::timestamptz", &[&until])
+            .await;
+        if x.is_err()
+            && [
+                SqlState::INVALID_DATETIME_FORMAT.code(),
+                SqlState::DATETIME_VALUE_OUT_OF_RANGE.code(),
+            ]
+            .contains(&x.unwrap_err().code().unwrap().code())
+        {
+            err_count += 1;
+        }
+    }
+    if err_count == 2 {
+        bail!("until argument '{until}' is neither a valid bigint nor a valid datetime")
+    }
+    Ok(())
+}
+
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
@@ -172,18 +204,32 @@ pub async fn load_queue(
     if table_filter.is_some() {
         check_filter(source, table_filter.clone().unwrap()).await?;
     }
+    check_until(source, &until).await?;
 
     init_schema(target).await?;
 
     let target_tx = target.client.transaction().await?;
     static FIND_SOURCE_CHUNKS: &str = include_str!("find_source_chunks.sql");
     let source_tx = source.transaction().await?;
-    let rows = source_tx
+
+    let rows = match source_tx
         .query(FIND_SOURCE_CHUNKS, &[&table_filter, &until])
-        // TODO: determine if the problem is with until or filter and show a better error.
-        // until error if it's a string - ERROR: invalid input syntax for type bigint: "hello"
-        // filter error if it's an invalid regex. Eg `filter=[(` - ERROR: invalid regular expression: brackets [] not balanced
-        .await.with_context(|| "failed to find hypertable/chunks in source. DB invalid errors might be related to the `until` and `filter` flags.")?;
+        .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            let dberr = err.as_db_error().unwrap();
+            if dberr.code() == &SqlState::INVALID_TEXT_REPRESENTATION {
+                bail!("until argument '{until} is not a valid bigint and some matching hypertables use bigint time columns");
+            }
+            if dberr.code() == &SqlState::INVALID_DATETIME_FORMAT
+                || dberr.code() == &SqlState::DATETIME_VALUE_OUT_OF_RANGE
+            {
+                bail!("until argument '{until}' is not a valid datetime and some matching hypertables use date, timestamp, or timestamptz time columns")
+            }
+            bail!(err);
+        }
+    };
 
     let chunk_count = rows.len();
     let mut skipped_chunks = 0;
