@@ -222,3 +222,40 @@ impl TestConfig for TestConfigStage {
         vec![]
     }
 }
+
+#[derive(Default, Clone)]
+pub struct TestConfigRefreshCaggs {
+    source: TestConnectionString,
+    target: TestConnectionString,
+}
+
+impl TestConfigRefreshCaggs {
+    pub fn new<S: HasConnectionString, T: HasConnectionString>(
+        source: &'_ S,
+        target: &'_ T,
+    ) -> Self {
+        Self {
+            source: source.connection_string(),
+            target: target.connection_string(),
+        }
+    }
+}
+
+impl TestConfig for TestConfigRefreshCaggs {
+    fn args(&self) -> Vec<OsString> {
+        vec![
+            OsString::from("--source"),
+            OsString::from(self.source.as_str()),
+            OsString::from("--target"),
+            OsString::from(self.target.as_str()),
+        ]
+    }
+
+    fn action(&self) -> &str {
+        "refresh-caggs"
+    }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
