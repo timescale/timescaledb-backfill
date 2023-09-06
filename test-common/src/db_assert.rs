@@ -324,6 +324,31 @@ impl DbAssert {
         self
     }
 
+    pub fn has_cagg_with_watermark<T: AsRef<str>>(
+        &mut self,
+        schema: T,
+        name: T,
+        watermark: i64,
+    ) -> &mut Self {
+        assert!(
+            self._has_cagg(schema.as_ref(), name.as_ref()).unwrap(),
+            "{}cagg '{}.{}' doesn't exist",
+            self.name(),
+            schema.as_ref(),
+            name.as_ref(),
+        );
+        assert_eq!(
+            watermark,
+            self._fetch_cagg_watermark(schema.as_ref(), name.as_ref())
+                .unwrap(),
+            "{}cagg '{}.{}' watermark missmatch",
+            self.name(),
+            schema.as_ref(),
+            name.as_ref(),
+        );
+        self
+    }
+
     fn name(&self) -> String {
         self.name
             .as_ref()
@@ -558,5 +583,24 @@ SELECT EXISTS (
         let mt_schema = row.get("mt_schema");
         let mt_name = row.get("mt_name");
         Ok((mt_schema, mt_name))
+    }
+
+    fn _has_cagg(&mut self, schema: &str, name: &str) -> Result<bool> {
+        let query: &str = r"SELECT EXISTS (
+            SELECT true
+            FROM _timescaledb_catalog.continuous_agg
+            WHERE user_view_schema = $1 AND user_view_name = $2)";
+        let row = self.connection().query_one(query, &[&schema, &name])?;
+        Ok(row.get(0))
+    }
+
+    // TODO add support for the old format
+    fn _fetch_cagg_watermark(&mut self, schema: &str, name: &str) -> Result<i64> {
+        let query: &str = r"SELECT watermark
+            FROM _timescaledb_catalog.continuous_agg
+            JOIN _timescaledb_catalog.continuous_aggs_watermark USING (mat_hypertable_id)
+            WHERE user_view_schema = $1 AND user_view_name = $2";
+        let row = self.connection().query_one(query, &[&schema, &name])?;
+        Ok(row.get(0))
     }
 }
