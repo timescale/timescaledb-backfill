@@ -17,6 +17,7 @@ use tokio::time::Instant;
 use tokio_postgres::Config;
 use tracing::{debug, error};
 
+mod caggs;
 mod connect;
 mod execute;
 mod logging;
@@ -116,6 +117,17 @@ pub struct VerifyConfig {
 }
 
 #[derive(Parser, Debug)]
+pub struct RefreshCaggsConfig {
+    /// Connection string to the source database
+    #[arg(long)]
+    source: String,
+
+    /// Connection string to the target database
+    #[arg(long)]
+    target: String,
+}
+
+#[derive(Parser, Debug)]
 pub struct CleanConfig {
     /// Connection string to the target database
     #[arg(long)]
@@ -128,6 +140,7 @@ pub enum Command {
     Copy(CopyConfig),
     Verify(VerifyConfig),
     Clean(CleanConfig),
+    RefreshCaggs(RefreshCaggsConfig),
 }
 
 #[derive(Parser, Debug)]
@@ -261,6 +274,13 @@ async fn main() -> Result<()> {
             let target_config = Config::from_str(&args.target)?;
             task::clean(&target_config).await?;
             TERM.write_line("Cleaned target")?;
+            Ok(())
+        }
+        Command::RefreshCaggs(args) => {
+            let source = Source::connect(&Config::from_str(&args.source)?).await?;
+            let target = Target::connect(&Config::from_str(&args.target)?).await?;
+            caggs::refresh_caggs(&source, &target).await?;
+            TERM.write_line("Refreshed continuous aggregates")?;
             Ok(())
         }
     }

@@ -127,7 +127,7 @@ SELECT
 }
 
 pub struct Source {
-    client: Client,
+    pub client: Client,
 }
 
 impl Source {

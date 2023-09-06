@@ -74,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgversion: [ 12, 13, 14, 15 ]
+        pgversion: [12, 13, 14, 15]
 
     runs-on: ubuntu-latest
     steps:
@@ -107,7 +107,7 @@ jobs:
           pg_dump --version
 
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
         env:
           BF_TEST_PG_VERSION: ${{ matrix.pgversion }}
 
@@ -127,4 +127,3 @@ jobs:
       - name: Mark the job as a failure
         if: needs.changes.outputs.files == 'true' && (needs.lint.result != 'success' || needs.test.result != 'success')
         run: exit 1
-
