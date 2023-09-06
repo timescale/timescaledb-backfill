@@ -269,6 +269,28 @@ impl DbAssert {
         self
     }
 
+    pub fn has_task_count_for_table<T: AsRef<str>>(
+        &mut self,
+        schema: T,
+        table: T,
+        count: i64,
+    ) -> &mut Self {
+        let task_count = self
+            ._get_task_count_for_table(schema.as_ref(), table.as_ref())
+            .unwrap();
+        assert_eq!(
+            task_count,
+            count,
+            "{}task count for '{}.{}' is '{}', not '{}'",
+            self.name(),
+            schema.as_ref(),
+            table.as_ref(),
+            task_count,
+            count
+        );
+        self
+    }
+
     pub fn job_runs_successfully<T: AsRef<str>>(
         &mut self,
         schema: T,
@@ -478,6 +500,30 @@ SELECT EXISTS (
         let row = self
             .connection()
             .query_one("SELECT count(*) FROM __backfill.task", &[])?;
+        Ok(row.get("count"))
+    }
+
+    fn _get_task_count_for_table(&mut self, schema: &str, table: &str) -> Result<i64> {
+        let row = self.connection().query_one(
+            r#"
+            SELECT count(*)
+            FROM __backfill.task t
+            WHERE (t.hypertable_schema, t.hypertable_name) IN
+            (
+                SELECT
+                  $1 as hypertable_schema
+                , $2 as hypertable_table
+                UNION
+                SELECT
+                  h.schema_name
+                , h.table_name
+                FROM _timescaledb_catalog.continuous_agg c
+                INNER JOIN _timescaledb_catalog.hypertable h ON (h.id = c.mat_hypertable_id)
+                WHERE c.user_view_schema = $1
+                AND c.user_view_name = $2
+            )"#,
+            &[&schema, &table],
+        )?;
         Ok(row.get("count"))
     }
 

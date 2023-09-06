@@ -148,6 +148,8 @@ pub struct TestConfigStage {
     target: TestConnectionString,
     until: String,
     filter: Option<String>,
+    cascade_up: Option<bool>,
+    cascade_down: Option<bool>,
 }
 
 impl TestConfigStage {
@@ -161,12 +163,28 @@ impl TestConfigStage {
             target: target.connection_string(),
             until: until.to_string(),
             filter: None,
+            cascade_up: None,
+            cascade_down: None,
         }
     }
 
     pub fn with_filter(&mut self, filter: &str) -> Self {
         Self {
             filter: Some(filter.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_up(&mut self) -> Self {
+        Self {
+            cascade_up: Some(true),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_down(&mut self) -> Self {
+        Self {
+            cascade_down: Some(true),
             ..self.clone()
         }
     }
@@ -185,6 +203,12 @@ impl TestConfig for TestConfigStage {
 
         if let Some(filter) = self.filter.as_ref() {
             args.extend_from_slice(&[OsString::from("--filter"), OsString::from(filter)]);
+            if self.cascade_up.is_some_and(|b| b) {
+                args.extend_from_slice(&[OsString::from("--cascade-up")]);
+            }
+            if self.cascade_down.is_some_and(|b| b) {
+                args.extend_from_slice(&[OsString::from("--cascade-down")]);
+            }
         }
 
         args

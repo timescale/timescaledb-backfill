@@ -197,12 +197,14 @@ async fn check_until(source: &mut Source, until: &String) -> Result<()> {
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
-    table_filter: Option<String>,
+    filter: Option<String>,
+    cascade_up: bool,
+    cascade_down: bool,
     until: String,
     snapshot: Option<String>,
 ) -> Result<()> {
-    if table_filter.is_some() {
-        check_filter(source, table_filter.clone().unwrap()).await?;
+    if filter.is_some() {
+        check_filter(source, filter.clone().unwrap()).await?;
     }
     check_until(source, &until).await?;
 
@@ -213,7 +215,10 @@ pub async fn load_queue(
     let query = set_query_source_proc_schema(FIND_SOURCE_CHUNKS);
     let source_tx = source.transaction().await?;
 
-    let rows = match source_tx.query(&query, &[&table_filter, &until]).await {
+    let rows = match source_tx
+        .query(&query, &[&filter, &until, &cascade_up, &cascade_down])
+        .await
+    {
         Ok(rows) => rows,
         Err(err) => {
             let dberr = err.as_db_error().unwrap();

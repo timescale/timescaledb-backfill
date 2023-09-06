@@ -1,11 +1,99 @@
 /*
 $1 is a case insensitive posix regular expression filtering on hypertable schema.table
 $2 is a string that represents the upper bound on "time" dimension values
+$3 is a bool controlling whether or not filter matches cascade up the cagg hierarchy
+$4 is a bool controlling whether or not filter matches cascade down the cagg hierarchy
 
 TimescaleDB 2.12 changed the schema where internal functions are installed from
 _timescaledb_internal to _timescaledb_functions, to support both we add the
 @extschema@ placeholder and replace it before running the query.
 */
+with recursive f as
+(
+    select -- all hypertables OR hypertables that match the filter
+      h.id
+    , h.schema_name
+    , h.table_name
+    , h.num_dimensions
+    from _timescaledb_catalog.hypertable h
+    where $1::text is null or format('%I.%I', h.schema_name, h.table_name) ~* $1::text
+    union
+    select -- if filter provided, materialized hypertables for caggs matching the filter
+      h.id
+    , h.schema_name
+    , h.table_name
+    , h.num_dimensions
+    from _timescaledb_catalog.continuous_agg c
+    inner join _timescaledb_catalog.hypertable h on (c.mat_hypertable_id = h.id)
+    where $1::text is not null and format('%I.%I', c.user_view_schema, c.user_view_name) ~* $1::text
+)
+, up as
+(
+    select
+      f.id
+    , f.schema_name
+    , f.table_name
+    , f.num_dimensions
+    , c.mat_hypertable_id
+    from f
+    inner join _timescaledb_catalog.continuous_agg c on (f.id = c.raw_hypertable_id)
+    where $3::bool -- cascade up?
+    union all
+    select
+      h.id
+    , h.schema_name
+    , h.table_name
+    , h.num_dimensions
+    , c.mat_hypertable_id
+    from up
+    inner join _timescaledb_catalog.hypertable h on (h.id = up.mat_hypertable_id)
+    left outer join _timescaledb_catalog.continuous_agg c on (h.id = c.raw_hypertable_id)
+)
+, down as
+(
+    select
+      f.id
+    , f.schema_name
+    , f.table_name
+    , f.num_dimensions
+    , c.raw_hypertable_id
+    from f
+    inner join _timescaledb_catalog.continuous_agg c on (f.id = c.mat_hypertable_id)
+    where $4::bool -- cascade down ?
+    union all
+    select
+      h.id
+    , h.schema_name
+    , h.table_name
+    , h.num_dimensions
+    , c.raw_hypertable_id
+    from down
+    inner join _timescaledb_catalog.hypertable h on (h.id = down.raw_hypertable_id)
+    left outer join _timescaledb_catalog.continuous_agg c on (h.id = c.mat_hypertable_id)
+)
+, h as -- final distinct list of hypertables
+(
+    select
+      id
+    , schema_name
+    , table_name
+    , num_dimensions
+    from f
+    union
+    select
+      id
+    , schema_name
+    , table_name
+    , num_dimensions
+    from up
+    union
+    select
+      id
+    , schema_name
+    , table_name
+    , num_dimensions
+    from down
+)
 select
   c.schema_name as chunk_schema
 , c.table_name as chunk_name
@@ -25,20 +113,11 @@ select
     from _timescaledb_catalog.chunk_constraint cc2
     inner join _timescaledb_catalog.dimension_slice ds2 on (cc2.chunk_id = c.id and cc2.dimension_slice_id = ds2.id)
     inner join _timescaledb_catalog.dimension d2 on (ds2.dimension_id = d2.id and d2.hypertable_id = h.id)
-  )::TEXT as dimensions
+  )::text as dimensions
 , case when ds.range_start <= d.filter_value and d.filter_value < ds.range_end
     then format('%I <= %s', d.column_name, d.filter_literal)
   end as filter
-from
-(
-    select
-      h.id
-    , h.schema_name
-    , h.table_name
-    , h.num_dimensions
-    from _timescaledb_catalog.hypertable h
-    where $1::text is null or format('%I.%I', h.schema_name, h.table_name) ~* $1::text
-) h
+from h
 inner join lateral
 (
     select
