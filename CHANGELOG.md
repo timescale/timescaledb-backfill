@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.0](https://github.com/timescale/timescaledb-backfill/compare/v0.3.0...v0.4.0) (2023-09-12)
+
+
+### Features
+
+* --filter arg is now verified to be valid regexp ([bcb7b1c](https://github.com/timescale/timescaledb-backfill/commit/bcb7b1cb34add552a123b2cae04c9d59ded64a38))
+* --until argument is now verified to be valid bigint or datetime ([887cb70](https://github.com/timescale/timescaledb-backfill/commit/887cb703480e0914f1f23c9b2f202d83e77dbd2b))
+* filter can match ht and caggs and cascade to/from ht/caggs ([5da5e81](https://github.com/timescale/timescaledb-backfill/commit/5da5e819ace1384c87865ee02dc6df19f42daff6))
+* support timescale 2.12 new functions schema ([6b3875f](https://github.com/timescale/timescaledb-backfill/commit/6b3875fbcfe3aac874bbca1efeec7aae8a6f7b27))
+
+
+### Bug Fixes
+
+* remove tzrange as valid time dimension ([cc91a56](https://github.com/timescale/timescaledb-backfill/commit/cc91a5664d7082d18f9722570c805b47ad3b252c))
+* use updated fork of tokio-postgres-rustls ([18d0d39](https://github.com/timescale/timescaledb-backfill/commit/18d0d39b937c050afeb4796e9c2b29c8b80b62c7))
+
+
+### Miscellaneous
+
+* add --filter test ([ffd344b](https://github.com/timescale/timescaledb-backfill/commit/ffd344b19b7185c7f276d0e94ea1db61f885f118))
+* change release-please to github-token ([3c48a8d](https://github.com/timescale/timescaledb-backfill/commit/3c48a8d676402028025b11018cd53b7b42539add))
+* skip double_ctrl_c_stops_hard on macos ([0af9515](https://github.com/timescale/timescaledb-backfill/commit/0af9515947208a1cc3f97ec1989e232b78cdfe50))
+
 ## [0.3.0](https://github.com/timescale/timescaledb-backfill/compare/v0.2.2...v0.3.0) (2023-08-28)
 
 
