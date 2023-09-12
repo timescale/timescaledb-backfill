@@ -61,13 +61,24 @@ pub struct StageConfig {
     ///
     /// timescaledb-backfill stage --filter epoch_schema.* --until 1692696465
     /// timescaledb-backfill stage --filter public.table_with_auto_increment_integer --until 424242
-    /// timescaledb-backfill stage --filter public.table_with_timestampt --until '2016-02-01T18:20:00'
+    /// timescaledb-backfill stage --filter public.table_with_timestamptz --until '2016-02-01T18:20:00'
     #[arg(short, long)]
     until: String,
 
     /// Posix regular expression used to match `schema.table` for hypertables
-    #[arg(short, long = "filter")]
-    table_filter: Option<String>,
+    /// and `schema.view` for continuous aggregates
+    #[arg(short, long)]
+    filter: Option<String>,
+
+    /// If filter is provided, automatically include continuous aggregates and hypertables which
+    /// depend upon hypertables and continuous aggregates that match the filter
+    #[arg(short = 'U', long = "cascade-up")]
+    cascade_up: bool,
+
+    /// If filter is provided, automatically include continuous aggregates and hypertables on which
+    /// continuous aggregates matching the filter depend
+    #[arg(short = 'D', long = "cascade-down")]
+    cascade_down: bool,
 
     /// A postgres snapshot exported from source to use when copying
     #[arg(short, long)]
@@ -147,7 +158,9 @@ async fn main() -> Result<()> {
             task::load_queue(
                 &mut source,
                 &mut target,
-                args.table_filter,
+                args.filter,
+                args.cascade_up,
+                args.cascade_down,
                 args.until,
                 args.snapshot,
             )

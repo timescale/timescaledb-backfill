@@ -50,8 +50,29 @@ static DECOMPRESS_ONE_CHUNK: &str = r"
 static CREATE_CONTINUOUS_AGGREGATE: &str = r"
     CREATE MATERIALIZED VIEW cagg
     WITH (timescaledb.continuous) AS
-    SELECT time_bucket('1 day', time) as time, device_id, max(val) FROM metrics
+    SELECT time_bucket('1 day', time) as time, device_id, max(val) as max_val FROM metrics
     GROUP BY time_bucket('1 day', time), device_id;
+";
+
+static CREATE_ANOTHER_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW cagg2
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('1 day', time) as time, device_id, avg(val) as avg_val FROM metrics
+    GROUP BY time_bucket('1 day', time), device_id;
+";
+
+static CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW hcagg
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('2 day', time) as time, device_id, max(max_val) as max_val FROM cagg
+    GROUP BY time_bucket('2 day', time), device_id;
+";
+
+static CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW hcagg2
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('2 day', time) as time, device_id, avg(max_val) as avg_max_val FROM cagg
+    GROUP BY time_bucket('2 day', time), device_id;
 ";
 
 static SETUP_BIGINT_HYPERTABLE: &str = r"
@@ -88,6 +109,40 @@ static INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY: &str = r"
     FROM generate_series('2023-05-01T00:00:00Z'::timestamptz, '2023-05-31T23:30:00Z'::timestamptz, '1 hour'::interval) time;
 ";
 
+static CREATE_OTHER_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW other.cagg
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('1 day', time) as time, device_id, max(val) as max_val FROM other.metrics
+    GROUP BY time_bucket('1 day', time), device_id;
+";
+
+static CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE: &str = r"
+    CREATE MATERIALIZED VIEW other.hcagg
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('2 day', time) as time, device_id, max(max_val) as max_val FROM other.cagg
+    GROUP BY time_bucket('2 day', time), device_id;
+";
+
+#[derive(Debug, Eq, PartialEq)]
+enum CascadeMode {
+    None,
+    Up,
+    Down,
+    Both,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Filter<'a> {
+    filter: &'a str,
+    cascade: CascadeMode,
+}
+
+impl<'a> Filter<'a> {
+    fn new(filter: &'a str, cascade: CascadeMode) -> Self {
+        Filter { filter, cascade }
+    }
+}
+
 #[derive(Debug)]
 struct TestCase<'a, S, F>
 where
@@ -96,7 +151,7 @@ where
 {
     setup_sql: Vec<PsqlInput<S>>,
     completion_time: &'a str,
-    filter: Option<String>,
+    filter: Option<Filter<'a>>,
     post_skeleton_source_sql: Vec<PsqlInput<S>>,
     post_skeleton_target_sql: Vec<PsqlInput<S>>,
     asserts: Box<F>,
@@ -152,7 +207,13 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
     );
 
     if let Some(filter) = test_case.filter {
-        stage_config = stage_config.with_filter(&filter);
+        stage_config = stage_config.with_filter(filter.filter);
+        stage_config = match filter.cascade {
+            CascadeMode::Up => stage_config.with_cascading_up(),
+            CascadeMode::Down => stage_config.with_cascading_down(),
+            CascadeMode::Both => stage_config.with_cascading_up().with_cascading_down(),
+            CascadeMode::None => stage_config,
+        };
     }
 
     run_backfill(stage_config).unwrap().assert().success();
@@ -225,7 +286,7 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5);
                 }
             }),
-            filter: Some("public.metrics".into()),
+            filter: Some(Filter::new("public.metrics", CascadeMode::None)),
         }
     ),
     (
@@ -253,7 +314,7 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5);
                 }
             }),
-            filter: Some("public.*".into()),
+            filter: Some(Filter::new("public.*", CascadeMode::None)),
         }
     ),
     (
@@ -582,6 +643,327 @@ generate_tests!(
                     .has_compressed_chunk_count("public", "metrics", 0);
             }),
             filter: None,
+        }
+    ),
+    (
+        filter_match_one_ht,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count(5);
+            }),
+            filter: Some(Filter::new("^public\\.metrics$", CascadeMode::None)),
+        }
+    ),
+    (
+        filter_match_two_ht,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("other", "metrics", 5);
+                target.has_task_count(10);
+            }),
+            filter: Some(Filter::new("^(public|other)\\.metrics$", CascadeMode::None)),
+        }
+    ),
+    (
+        filter_match_one_cagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count(1);
+            }),
+            filter: Some(Filter::new("^public\\.cagg$", CascadeMode::None)),
+        }
+    ),
+    (
+        filter_match_two_cagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("other", "cagg", 1);
+                target.has_task_count(2);
+            }),
+            filter: Some(Filter::new("^(public|other)\\.cagg$", CascadeMode::None)),
+        }
+    ),
+    (
+        filter_match_schema,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("other", "metrics", 5);
+                target.has_task_count_for_table("other", "cagg", 1);
+                target.has_task_count_for_table("other", "hcagg", 1);
+                target.has_task_count(7);
+            }),
+            filter: Some(Filter::new("^other\\..*$", CascadeMode::None)),
+        }
+    ),
+    (
+        filter_cascade_up_from_ht,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("public", "cagg2", 1);
+                target.has_task_count_for_table("public", "hcagg", 1);
+                target.has_task_count_for_table("public", "hcagg2", 1);
+                target.has_task_count(9);
+            }),
+            filter: Some(Filter::new("^public\\.metrics$", CascadeMode::Up)),
+        }
+    ),
+    (
+        filter_cascade_up_from_cagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("public", "hcagg", 1);
+                target.has_task_count_for_table("public", "hcagg2", 1);
+                target.has_task_count(3);
+            }),
+            filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Up)),
+        }
+    ),
+    (
+        filter_cascade_down_from_cagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count(6);
+            }),
+            filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Down)),
+        }
+    ),
+    (
+        filter_cascade_up_and_down_from_cagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("public", "hcagg", 1);
+                target.has_task_count_for_table("public", "hcagg2", 1);
+                target.has_task_count(8);
+            }),
+            filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Both)),
+        }
+    ),
+    (
+        filter_cascade_down_from_hcagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("public", "hcagg", 1);
+                target.has_task_count(7);
+            }),
+            filter: Some(Filter::new("^public\\.hcagg$", CascadeMode::Down)),
+        }
+    ),
+    (
+        filter_cascade_down_from_two_hcagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("public", "metrics", 5);
+                target.has_task_count_for_table("public", "cagg", 1);
+                target.has_task_count_for_table("public", "hcagg", 1);
+                target.has_task_count_for_table("other", "metrics", 5);
+                target.has_task_count_for_table("other", "cagg", 1);
+                target.has_task_count_for_table("other", "hcagg", 1);
+                target.has_task_count(14);
+            }),
+            filter: Some(Filter::new("^(public|other)\\.hcagg$", CascadeMode::Down)),
+        }
+    ),
+    (
+        filter_cascade_up_from_hcagg,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_ANOTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(SETUP_OTHER_HYPERTABLE),
+                PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
+                PsqlInput::Sql(CREATE_OTHER_CONTINUOUS_AGGREGATE),
+                PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
+            ],
+            completion_time: "2023-07-01T00:00:00",
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
+                target.has_task_count_for_table("other", "hcagg", 1);
+                target.has_task_count(1);
+            }),
+            filter: Some(Filter::new("^other\\.hcagg$", CascadeMode::Up)),
         }
     ),
 );
