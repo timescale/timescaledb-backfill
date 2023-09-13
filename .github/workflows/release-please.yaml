@@ -4,6 +4,7 @@ on:
       - main
 
 permissions:
+  id-token: write
   contents: write
   pull-requests: write
 
@@ -29,6 +30,9 @@ jobs:
     needs: release-please
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.release_created
+    env:
+      TARFILE_NAME: timescaledb-backfill-x86_64-linux.tar.gz
+      VERSIONED_TARFILE_NAME: timescaledb-backfill-${{ needs.release-please.outputs.tag_name }}-x86_64-linux.tar.gz
     steps:
       - uses: actions/checkout@v3
 
@@ -46,10 +50,29 @@ jobs:
       # By putting the executable in a tar archive, we can ensure that the executable bit remains set on the file, see: https://github.com/actions/upload-artifact#permission-loss
       - name: Prepare tar archive
         run: |
-          tar -C target/x86_64-unknown-linux-musl/release -czvf timescaledb-backfill-x86_64-linux.tar.gz timescaledb-backfill
+          tar -C target/x86_64-unknown-linux-musl/release -czvf ${TARFILE_NAME} timescaledb-backfill
 
-      - name: Upload Release Artifact
+      - name: Attach the binary to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run:
-          gh release upload ${{ needs.release-please.outputs.tag_name }} timescaledb-backfill-x86_64-linux.tar.gz
+          gh release upload ${{ needs.release-please.outputs.tag_name }} ${TARFILE_NAME}
+
+      - name: Configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::818196790983:role/upload-releases-to-assets.timescale.com
+          aws-region: us-east-1
+
+      - name: Upload the binary to assets.timescale.com
+        run: |
+          aws s3api put-object \
+            --acl public-read \
+            --bucket assets.timescale.com \
+             --key releases/${VERSIONED_TARFILE_NAME} \
+             --body ${TARFILE_NAME}
+          aws s3api put-object \
+            --acl public-read \
+            --bucket assets.timescale.com \
+             --key releases/${TARFILE_NAME} \
+             --body ${TARFILE_NAME}
