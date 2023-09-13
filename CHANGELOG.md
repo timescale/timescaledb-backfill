@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/timescale/timescaledb-backfill/compare/v0.4.0...v0.4.1) (2023-09-13)
+
+
+### Miscellaneous
+
+* upload releases to assets.timescale.com ([384c704](https://github.com/timescale/timescaledb-backfill/commit/384c7045c4d1d241c4eb1b6124ca32fc52f80ee7))
+
 ## [0.4.0](https://github.com/timescale/timescaledb-backfill/compare/v0.3.0...v0.4.0) (2023-09-12)
 
 
