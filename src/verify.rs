@@ -1,12 +1,14 @@
+use crate::{execute::chunk_exists, task::VerifyTask};
 use anyhow::{bail, Ok, Result};
 use diffy::{create_patch, PatchFormatter};
 use serde::Serialize;
 use std::error::Error;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::{collections::BTreeMap, fmt};
 use tokio_postgres::Transaction;
 use tracing::debug;
 
-use crate::{execute::chunk_exists, task::VerifyTask};
+pub static FAILED_VERIFICATIONS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
 pub struct VerificationError {
@@ -170,14 +172,15 @@ pub async fn verify_chunk_data(
     let summary_query_select_columns =
         fetch_summary_query_select_columns(target_tx, &target_table).await?;
 
-    let source_summary = fetch_summary(
+    let target_summary = fetch_summary(
         target_tx,
         &target_table,
         &summary_query_select_columns,
         &verify_task.filter,
     )
     .await?;
-    let target_summary = fetch_summary(
+
+    let source_summary = fetch_summary(
         source_tx,
         &source_table,
         &summary_query_select_columns,
@@ -186,6 +189,7 @@ pub async fn verify_chunk_data(
     .await?;
 
     if source_summary != target_summary {
+        FAILED_VERIFICATIONS.fetch_add(1, Relaxed);
         let source_yaml = serde_yaml::to_string(&source_summary)?;
         let target_yaml = serde_yaml::to_string(&target_summary)?;
         let patch = create_patch(&source_yaml, &target_yaml);

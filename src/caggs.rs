@@ -6,11 +6,10 @@ use tokio_postgres::Client;
 
 /// Refresh the continuous aggregates in `target` based on the watermark values
 /// in `source`.
-pub(crate) async fn refresh_caggs(source: &Source, target: &Target) -> Result<()> {
+pub(crate) async fn refresh_caggs(source: &Source, target: &Target) -> Result<usize> {
     initialize_target_proc_schema(target).await?;
     let watermarks = get_watermarks(source).await?;
-    refresh_up_to_watermarks(target, watermarks).await?;
-    Ok(())
+    refresh_up_to_watermarks(target, watermarks).await
 }
 
 struct Watermark {
@@ -23,7 +22,7 @@ struct Watermark {
 }
 
 /// Run `refresh_continuous_aggregate` for all watermark values in `watermarks`
-async fn refresh_up_to_watermarks(target: &Target, watermarks: Vec<Watermark>) -> Result<()> {
+async fn refresh_up_to_watermarks(target: &Target, watermarks: Vec<Watermark>) -> Result<usize> {
     let (values_string, values) = build_values_list(&watermarks);
     let snippet = if has_watermark_table(&target.client).await? {
         "INNER JOIN _timescaledb_catalog.continuous_aggs_watermark w ON (c.mat_hypertable_id = w.mat_hypertable_id)"
@@ -91,6 +90,7 @@ async fn refresh_up_to_watermarks(target: &Target, watermarks: Vec<Watermark>) -
         .query(&query, &values[..])
         .await
         .context("unable to get detailed refresh information")?;
+    let refreshed_caggs = rows.len();
     for row in rows {
         let user_view_schema: String = row.get(0);
         let user_view_name: String = row.get(1);
@@ -100,7 +100,7 @@ async fn refresh_up_to_watermarks(target: &Target, watermarks: Vec<Watermark>) -
         println!("Refreshing continuous aggregate '{user_view_schema}'.'{user_view_name}' in range [{window_start}, {window_end})");
         target.client.execute(&format!("CALL refresh_continuous_aggregate(format('%I.%I', $1::text, $2::text)::regclass, $3::text::{column_type}, $4::text::{column_type})"), &[&user_view_schema, &user_view_name, &window_start, &window_end]).await?;
     }
-    Ok(())
+    Ok(refreshed_caggs)
 }
 
 /// Builds a parameterized query string and parameter array for building a

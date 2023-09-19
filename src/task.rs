@@ -1,9 +1,10 @@
 use crate::connect::{Source, Target};
+use crate::storage::{backfill_schema_exists, init_schema};
 use crate::timescale::{set_query_source_proc_schema, Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Result};
 use tokio_postgres::error::SqlState;
-use tokio_postgres::{Client, Config, GenericClient, Transaction};
+use tokio_postgres::{Client, Config, Transaction};
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -123,30 +124,7 @@ pub async fn complete_verify_task(
     Ok(())
 }
 
-async fn backfill_schema_exists<T>(client: &T) -> Result<bool>
-where
-    T: GenericClient,
-{
-    let row = client
-        .query_one(
-            "select count(*) > 0 as schema_exists from pg_namespace where nspname = '__backfill'",
-            &[],
-        )
-        .await?;
-    Ok(row.get("schema_exists"))
-}
-
-async fn init_schema(target: &mut Target) -> Result<()> {
-    let tx = target.client.transaction().await?;
-    if !backfill_schema_exists(&tx).await? {
-        static SCHEMA: &str = include_str!("schema.sql");
-        tx.simple_query(SCHEMA).await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn check_filter(source: &mut Source, table_filter: String) -> Result<()> {
+async fn check_filter(source: &mut Source, table_filter: &String) -> Result<()> {
     let source_tx = source.transaction().await?;
     let x = source_tx
         .query(
@@ -197,16 +175,16 @@ async fn check_until(source: &mut Source, until: &String) -> Result<()> {
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
-    filter: Option<String>,
+    filter: Option<&String>,
     cascade_up: bool,
     cascade_down: bool,
-    until: String,
-    snapshot: Option<String>,
-) -> Result<()> {
+    until: &String,
+    snapshot: Option<&String>,
+) -> Result<usize> {
     if filter.is_some() {
-        check_filter(source, filter.clone().unwrap()).await?;
+        check_filter(source, filter.unwrap()).await?;
     }
-    check_until(source, &until).await?;
+    check_until(source, until).await?;
 
     init_schema(target).await?;
 
@@ -270,15 +248,15 @@ pub async fn load_queue(
     }
     target_tx.commit().await?;
 
-    let task_count = chunk_count - skipped_chunks;
-    TERM.write_line(&format!("Staged {task_count} chunks to copy"))?;
     if skipped_chunks > 0 {
         TERM.write_line(&format!(
             "Skipping {skipped_chunks} chunks that were already staged. To re-stage run the `clean` command first."
         ))?;
     }
 
-    Ok(())
+    let staged_tasks = chunk_count - skipped_chunks;
+
+    Ok(staged_tasks)
 }
 
 async fn get_pending_task_count(client: &Client, task: &TaskType) -> Result<u64> {

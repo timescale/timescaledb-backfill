@@ -251,9 +251,19 @@ async fn copy_chunk_data(
         create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
     }
     debug!(
-        "Finished copying uncompressed chunk {}",
+        "Finished copying uncompressed chunk {}. Starting analysis.",
         source_chunk.quoted_name()
     );
+
+    target_tx
+        .execute(&format!("analyze {}", target_chunk.quoted_name()), &[])
+        .await?;
+
+    debug!(
+        "Finished analyzing uncompressed chunk {}",
+        source_chunk.quoted_name()
+    );
+
     Ok(copy_result)
 }
 
@@ -376,7 +386,16 @@ async fn copy_compressed_chunk_data(
     }
 
     debug!(
-        "Finished copying compressed chunk {}",
+        "Finished copying compressed chunk {}. Starting analysis",
+        source_chunk.quoted_name()
+    );
+
+    target_tx
+        .execute(&format!("analyze {}", target_chunk.quoted_name()), &[])
+        .await?;
+
+    debug!(
+        "Finished analyzing compressed chunk {}",
         source_chunk.quoted_name()
     );
     Ok(copy_result)
@@ -442,6 +461,7 @@ async fn copy_from_source_to_sink(
         }
     }
     if !buf.is_empty() {
+        bytes += buf.len();
         sink.feed(buf.split().freeze()).await?;
     }
 

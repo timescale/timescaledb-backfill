@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use postgres::{Client, Config};
+use serde_json::Value;
 use std::str::FromStr;
-use tokio_postgres::NoTls;
+use tokio_postgres::{NoTls, Row};
 
-use crate::{HasConnectionString, TestConnectionString};
+use crate::{HasConnectionString, JsonAssert, TestConnectionString};
 
 pub struct DbAssert {
     client: Client,
@@ -349,6 +350,29 @@ impl DbAssert {
         self
     }
 
+    pub fn has_telemetry<F>(&mut self, asserts: Vec<F>) -> &mut Self
+    where
+        F: Fn(JsonAssert),
+    {
+        let rows = self._get_telemetry().unwrap();
+
+        assert_eq!(
+            asserts.len(),
+            rows.len(),
+            "expected {} telemetry items, got {}",
+            asserts.len(),
+            rows.len()
+        );
+
+        for (idx, row) in rows.iter().enumerate() {
+            let telemetry_raw: Value = row.get(0);
+            let telemetry = telemetry_raw.as_object().unwrap();
+            let assert_fn = asserts.get(idx).unwrap();
+            assert_fn(JsonAssert::new(telemetry));
+        }
+        self
+    }
+
     fn name(&self) -> String {
         self.name
             .as_ref()
@@ -602,5 +626,18 @@ SELECT EXISTS (
             WHERE user_view_schema = $1 AND user_view_name = $2";
         let row = self.connection().query_one(query, &[&schema, &name])?;
         Ok(row.get(0))
+    }
+
+    fn _get_telemetry(&mut self) -> Result<Vec<Row>> {
+        let rows = self.connection().query(
+            r"
+            SELECT body
+            FROM _timescaledb_catalog.telemetry_event
+            WHERE tag = 'backfill_stats'
+            ORDER BY created
+        ",
+            &[],
+        )?;
+        Ok(rows)
     }
 }
