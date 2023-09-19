@@ -231,12 +231,13 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         .unwrap()
         .with_name("target");
 
-    (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
-
     run_backfill(TestConfigVerify::new(&source_container, &target_container))
         .unwrap()
         .assert()
-        .success();
+        .success()
+        .stdout(contains("Chunk verification failed").not());
+
+    (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
 
     Ok(())
 }
@@ -258,6 +259,12 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -286,6 +293,12 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: Some(Filter::new("public.metrics", CascadeMode::None)),
         }
@@ -314,6 +327,12 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: Some(Filter::new("public.*", CascadeMode::None)),
         }
@@ -337,6 +356,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -367,9 +392,16 @@ generate_tests!(
                 source
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5);
+
+                let tasks = 5;
                 target
                     .has_table_count("public", "metrics", 984)
-                    .has_chunk_count("public", "metrics", 7);
+                    .has_chunk_count("public", "metrics", 7)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(tasks),
+                        assert_copy_telemetry(tasks),
+                        assert_verify_telemetry(tasks, 0),
+                    ]);
             }),
             filter: None,
         }
@@ -398,6 +430,12 @@ generate_tests!(
                             0,
                         );
                 }
+                let tasks = 6;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -418,6 +456,12 @@ generate_tests!(
                         .has_table_count("public", "metrics", 1464)
                         .has_chunk_count("public", "metrics", 10);
                 }
+                let tasks = 10;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -441,6 +485,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5)
                         .has_compressed_chunk_count("public", "metrics", 2);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -464,6 +514,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 7)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+                let tasks = 7;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -488,6 +544,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 105)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+                let tasks = 105;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -509,10 +571,16 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
+                let tasks = 2;
                 target
                     .has_table_count("public", "metrics", 120)
                     .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 5);
+                    .has_compressed_chunk_count("public", "metrics", 5)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(tasks),
+                        assert_copy_telemetry(tasks),
+                        assert_verify_telemetry(tasks, 0),
+                    ]);
             }),
             filter: None,
         }
@@ -533,10 +601,16 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
+                let tasks = 2;
                 target
                     .has_table_count("public", "metrics", 120)
                     .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 1);
+                    .has_compressed_chunk_count("public", "metrics", 1)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(tasks),
+                        assert_copy_telemetry(tasks),
+                        assert_verify_telemetry(tasks, 0),
+                    ]);
             }),
             filter: None,
         }
@@ -568,7 +642,14 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 5);
-                target.has_table_count("public", "metrics", 144);
+                let tasks = 2;
+                target
+                    .has_table_count("public", "metrics", 144)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(tasks),
+                        assert_copy_telemetry(tasks),
+                        assert_verify_telemetry(tasks, 0),
+                    ]);
             }),
             filter: None,
         }
@@ -594,6 +675,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -617,6 +704,12 @@ generate_tests!(
                         .has_chunk_count("public", "metrics", 5)
                         .has_compressed_chunk_count("public", "metrics", 1);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
             }),
             filter: None,
         }
@@ -638,10 +731,16 @@ generate_tests!(
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
                     .has_compressed_chunk_count("public", "metrics", 0);
+                let tasks = 5;
                 target
                     .has_table_count("public", "metrics", 744)
                     .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 0);
+                    .has_compressed_chunk_count("public", "metrics", 0)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(tasks),
+                        assert_copy_telemetry(tasks),
+                        assert_verify_telemetry(tasks, 0),
+                    ]);
             }),
             filter: None,
         }
@@ -665,8 +764,15 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count(5);
+                let tasks = 5;
+                target
+                    .has_task_count_for_table("public", "metrics", tasks)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.metrics$", CascadeMode::None)),
         }
@@ -690,9 +796,16 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("other", "metrics", 5);
-                target.has_task_count(10);
+                let tasks = 10;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("other", "metrics", 5)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^(public|other)\\.metrics$", CascadeMode::None)),
         }
@@ -716,8 +829,15 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count(1);
+                let tasks = 1;
+                target
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.cagg$", CascadeMode::None)),
         }
@@ -741,9 +861,16 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("other", "cagg", 1);
-                target.has_task_count(2);
+                let tasks = 2;
+                target
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("other", "cagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^(public|other)\\.cagg$", CascadeMode::None)),
         }
@@ -767,10 +894,17 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("other", "metrics", 5);
-                target.has_task_count_for_table("other", "cagg", 1);
-                target.has_task_count_for_table("other", "hcagg", 1);
-                target.has_task_count(7);
+                let tasks = 7;
+                target
+                    .has_task_count_for_table("other", "metrics", 5)
+                    .has_task_count_for_table("other", "cagg", 1)
+                    .has_task_count_for_table("other", "hcagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^other\\..*$", CascadeMode::None)),
         }
@@ -794,12 +928,19 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("public", "cagg2", 1);
-                target.has_task_count_for_table("public", "hcagg", 1);
-                target.has_task_count_for_table("public", "hcagg2", 1);
-                target.has_task_count(9);
+                let tasks = 9;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("public", "cagg2", 1)
+                    .has_task_count_for_table("public", "hcagg", 1)
+                    .has_task_count_for_table("public", "hcagg2", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.metrics$", CascadeMode::Up)),
         }
@@ -823,10 +964,17 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("public", "hcagg", 1);
-                target.has_task_count_for_table("public", "hcagg2", 1);
-                target.has_task_count(3);
+                let tasks = 3;
+                target
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("public", "hcagg", 1)
+                    .has_task_count_for_table("public", "hcagg2", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Up)),
         }
@@ -850,9 +998,16 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count(6);
+                let tasks = 6;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Down)),
         }
@@ -876,11 +1031,18 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("public", "hcagg", 1);
-                target.has_task_count_for_table("public", "hcagg2", 1);
-                target.has_task_count(8);
+                let tasks = 8;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("public", "hcagg", 1)
+                    .has_task_count_for_table("public", "hcagg2", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.cagg$", CascadeMode::Both)),
         }
@@ -904,10 +1066,17 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("public", "hcagg", 1);
-                target.has_task_count(7);
+                let tasks = 7;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("public", "hcagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^public\\.hcagg$", CascadeMode::Down)),
         }
@@ -931,13 +1100,20 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("public", "metrics", 5);
-                target.has_task_count_for_table("public", "cagg", 1);
-                target.has_task_count_for_table("public", "hcagg", 1);
-                target.has_task_count_for_table("other", "metrics", 5);
-                target.has_task_count_for_table("other", "cagg", 1);
-                target.has_task_count_for_table("other", "hcagg", 1);
-                target.has_task_count(14);
+                let tasks = 14;
+                target
+                    .has_task_count_for_table("public", "metrics", 5)
+                    .has_task_count_for_table("public", "cagg", 1)
+                    .has_task_count_for_table("public", "hcagg", 1)
+                    .has_task_count_for_table("other", "metrics", 5)
+                    .has_task_count_for_table("other", "cagg", 1)
+                    .has_task_count_for_table("other", "hcagg", 1)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^(public|other)\\.hcagg$", CascadeMode::Down)),
         }
@@ -961,8 +1137,15 @@ generate_tests!(
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
-                target.has_task_count_for_table("other", "hcagg", 1);
-                target.has_task_count(1);
+                let tasks = 1;
+                target
+                    .has_task_count_for_table("other", "hcagg", tasks)
+                    .has_task_count(tasks)
+                    .has_telemetry(vec![
+                        assert_stage_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_copy_telemetry(usize::try_from(tasks).unwrap()),
+                        assert_verify_telemetry(usize::try_from(tasks).unwrap(), 0),
+                    ]);
             }),
             filter: Some(Filter::new("^other\\.hcagg$", CascadeMode::Up)),
         }
@@ -1016,6 +1199,17 @@ fn copy_without_available_tasks_error() -> Result<()> {
         .stderr(contains(
             "there are no pending copy tasks. Use the `stage` command to add more.",
         ));
+
+    DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target")
+        .has_telemetry(vec![
+            assert_stage_telemetry(0),
+            assert_error_telemetry(
+                String::from("copy"),
+                vec!["there are no pending copy tasks. Use the `stage` command to add more."],
+            ),
+        ]);
 
     Ok(())
 }
@@ -1119,7 +1313,7 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
             .and(contains(
                 "[1/1] Copied chunk \"_timescaledb_internal\".\"_hyper_1_1_chunk\"",
             ))
-            .and(contains("Copied 2.1MB from 1 chunks")),
+            .and(contains("Copied 3.1MB from 1 chunks")),
     );
 
     Ok(())
@@ -1263,7 +1457,9 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     .unwrap()
     .assert()
     .success()
-    .stdout(contains("Staged 2 chunks to copy"));
+    .stdout(contains(
+        "Staged 2 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
 
     // When we delete a chunk that has already been staged
     psql(
@@ -1343,7 +1539,9 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
     .unwrap()
     .assert()
     .success()
-    .stdout(contains("Staged 1 chunks to copy"));
+    .stdout(contains(
+        "Staged 1 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
 
     Ok(())
 }
@@ -1376,7 +1574,9 @@ fn duplicated_stage_task_is_skipped() -> Result<()> {
     .unwrap()
     .assert()
     .success()
-    .stdout(contains("Staged 1 chunks to copy"));
+    .stdout(contains(
+        "Staged 1 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
 
     let mut target_dbassert = DbAssert::new(&target_container.connection_string())
         .unwrap()
@@ -1425,7 +1625,7 @@ fn stage_and_copy_a_single_chunk<C: HasConnectionString>(
             r"
         INSERT INTO metrics(time, device_id, val)
         VALUES
-            ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 7, 21)",
+            ('2016-01-02T00:00:00Z'::timestamptz, 7, 21)",
         ),
     )?;
     run_backfill(TestConfigStage::new(
@@ -1436,7 +1636,9 @@ fn stage_and_copy_a_single_chunk<C: HasConnectionString>(
     .unwrap()
     .assert()
     .success()
-    .stdout(contains("Staged 1 chunks to copy"));
+    .stdout(contains(
+        "Staged 1 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
     run_backfill(TestConfigCopy::new(source_container, target_container))
         .unwrap()
         .assert()
@@ -1476,7 +1678,7 @@ fn verify_task_with_deleted_source_chunk() -> Result<()> {
             r"
         SELECT public.drop_chunks(
             'public.metrics',
-            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month'
+            '2016-01-02T00:00:00Z'::timestamptz + INTERVAL '2 month'
         )",
         ),
     )?;
@@ -1512,7 +1714,7 @@ fn verify_task_with_deleted_target_chunk() -> Result<()> {
             r"
         SELECT public.drop_chunks(
             'public.metrics',
-            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month'
+            '2016-01-02T00:00:00Z'::timestamptz + INTERVAL '2 month'
         )",
         ),
     )?;
@@ -1546,8 +1748,8 @@ fn verify_task_with_extra_rows_in_source() -> Result<()> {
             r"
         INSERT INTO metrics(time, device_id, val)
         VALUES
-            ('2016-01-01T23:59:59Z'::timestamptz - INTERVAL '3 month', 1, 11),
-            ('2016-01-02T00:00:02Z'::timestamptz - INTERVAL '3 month', 8, 31)",
+            ('2016-01-01T23:59:59Z'::timestamptz, 1, 11),
+            ('2016-01-02T00:00:02Z'::timestamptz, 8, 31)", // This row is discarded by until
         ),
     )?;
 
@@ -1556,31 +1758,29 @@ fn verify_task_with_extra_rows_in_source() -> Result<()> {
 ```diff
 --- original
 +++ modified
-@@ -1,14 +1,14 @@
+@@ -1,7 +1,7 @@
  min:
--  device_id: '7'
--  time: 2015-10-02 00:00:00+00
--  val: '21'
-+  device_id: '1'
-+  time: 2015-10-01 23:59:59+00
-+  val: '11'
+-  device_id: '1'
+-  time: 2016-01-01 23:59:59+00
+-  val: '11'
++  device_id: '7'
++  time: 2016-01-02 00:00:00+00
++  val: '21'
  max:
--  device_id: '7'
--  time: 2015-10-02 00:00:00+00
--  val: '21'
-+  device_id: '8'
-+  time: 2015-10-02 00:00:02+00
-+  val: '31'
+   device_id: '7'
+   time: 2016-01-02 00:00:00+00
+@@ -8,7 +8,7 @@
+   val: '21'
  sum: {}
  count:
--  device_id: 1
--  time: 1
--  val: 1
--total_count: 1
-+  device_id: 3
-+  time: 3
-+  val: 3
-+total_count: 3
+-  device_id: 2
+-  time: 2
+-  val: 2
+-total_count: 2
++  device_id: 1
++  time: 1
++  val: 1
++total_count: 1
 ```
 Verifed 1 chunks in"#;
 
@@ -1593,7 +1793,21 @@ Verifed 1 chunks in"#;
     // The output has some control characters for colors which make it hard to
     // compare against.
     let stripped_actual_output = String::from_utf8(strip(&success.get_output().stdout))?;
-    assert!(stripped_actual_output.contains(expected_diff));
+    assert!(
+        stripped_actual_output.contains(expected_diff),
+        "\n=== Expected diff \n {} \n=== Actual diff \n {}",
+        expected_diff,
+        stripped_actual_output
+    );
+
+    DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target")
+        .has_telemetry(vec![
+            assert_stage_telemetry(1),
+            assert_copy_telemetry(1),
+            assert_verify_telemetry(1, 1),
+        ]);
     Ok(())
 }
 
@@ -1674,6 +1888,8 @@ fn refresh_cagg() -> Result<()> {
     target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
     target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
     target_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
+
+    target_dbassert.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
     Ok(())
 }
 
@@ -1756,5 +1972,189 @@ fn refresh_cagg_with_filter() -> Result<()> {
     target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
     target_dbassert.has_cagg_with_watermark("public", "caggs_t2", old_watermark_cagg_t2);
 
+    target_dbassert.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
     Ok(())
+}
+
+#[test]
+fn telemetry_captures_error_reason() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    psql(&target_container, PsqlInput::Sql("drop table metrics"))?;
+    psql(
+        &target_container,
+        PsqlInput::Sql(
+            r"CREATE TABLE public.metrics(time TIMESTAMPTZ, device_id TEXT, val FLOAT8);",
+        ),
+    )?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-06-01T00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .success();
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .failure()
+        .stderr(contains("Error: worker pool error").and(contains(
+            r#"Caused by:
+    0: worker execution error
+    1: db error: ERROR: table "metrics" is not a hypertable
+    2: ERROR: table "metrics" is not a hypertable"#,
+        )));
+
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    target_dbassert.has_telemetry(vec![
+        assert_stage_telemetry(5),
+        assert_error_telemetry(
+            "copy".into(),
+            vec![
+                "worker pool error",
+                "worker execution error",
+                r#"db error: ERROR: table "metrics" is not a hypertable"#,
+                r#"ERROR: table "metrics" is not a hypertable"#,
+            ],
+        ),
+    ]);
+
+    Ok(())
+}
+
+fn assert_stage_telemetry(staged_tasks: usize) -> Box<dyn Fn(JsonAssert)> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_string("session_id");
+        json_assert.has_string("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", true);
+        json_assert.has("command", "stage");
+        json_assert.has_number("command_duration_secs");
+        json_assert.has("staged_tasks", staged_tasks);
+        json_assert.has_null("copy_tasks_finished");
+        json_assert.has_null("copy_tasks_total_bytes");
+        json_assert.has_null("verify_tasks_finished");
+        json_assert.has_null("error_reason");
+        json_assert.has_null("refreshed_caggs");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+    })
+}
+
+fn assert_copy_telemetry(copy_tasks_finished: usize) -> Box<dyn Fn(JsonAssert)> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_string("session_id");
+        json_assert.has_string("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", true);
+        json_assert.has("command", "copy");
+        json_assert.has_number("command_duration_secs");
+        json_assert.has("copy_tasks_finished", copy_tasks_finished);
+        json_assert.has_number("copy_tasks_total_bytes");
+        json_assert.has_null("staged_tasks");
+        json_assert.has_null("verify_tasks_finished");
+        json_assert.has_null("verify_tasks_failures");
+        json_assert.has_null("error_reason");
+        json_assert.has_null("refreshed_caggs");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+    })
+}
+
+fn assert_error_telemetry(command: String, reason: Vec<&str>) -> Box<dyn Fn(JsonAssert) + '_> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_array_value("error_reason", reason.clone());
+        json_assert.has_null("error_backtrace");
+        json_assert.has_string("session_id");
+        json_assert.has_string("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", false);
+        json_assert.has("command", command.clone());
+        json_assert.has_number("command_duration_secs");
+        json_assert.has_null("copy_tasks_finished");
+        json_assert.has_null("copy_tasks_total_bytes");
+        json_assert.has_null("staged_tasks");
+        json_assert.has_null("verify_tasks_finished");
+        json_assert.has_null("verify_tasks_failures");
+        json_assert.has_null("refreshed_caggs");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+    })
+}
+
+fn assert_verify_telemetry(
+    verify_tasks_finished: usize,
+    verify_tasks_failures: usize,
+) -> Box<dyn Fn(JsonAssert)> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_string("session_id");
+        json_assert.has_string("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", true);
+        json_assert.has("command", "verify");
+        json_assert.has_number("command_duration_secs");
+        json_assert.has_null("copy_tasks_finished");
+        json_assert.has_null("copy_tasks_total_bytes");
+        json_assert.has_null("staged_tasks");
+        json_assert.has_null("refreshed_caggs");
+        json_assert.has("verify_tasks_finished", verify_tasks_finished);
+        json_assert.has("verify_tasks_failures", verify_tasks_failures);
+        json_assert.has_null("error_reason");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+    })
+}
+
+fn assert_refresh_caggs_telemetry(refreshed_caggs: usize) -> Box<dyn Fn(JsonAssert)> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_null("session_id");
+        json_assert.has_null("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", true);
+        json_assert.has("command", "refresh_caggs");
+        json_assert.has_number("command_duration_secs");
+        json_assert.has_null("copy_tasks_finished");
+        json_assert.has_null("copy_tasks_total_bytes");
+        json_assert.has_null("staged_tasks");
+        json_assert.has("refreshed_caggs", refreshed_caggs);
+        json_assert.has_null("error_reason");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+    })
 }

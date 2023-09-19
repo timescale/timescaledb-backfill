@@ -8,7 +8,7 @@ use crate::workers::TaskResult::{NoItem, Processed};
 use crate::TERM;
 use anyhow::{bail, Context, Result};
 use human_repr::{HumanDuration, HumanThroughput};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -16,7 +16,7 @@ use tokio_postgres::Config;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace};
 
-pub static PROCESSED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub static PROCESSED_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Spawns asyncronous tasks (workers) that wait until a `Chunk` is
 /// passed via a `Receiver`, and copy the data of the `Chunk` from the source

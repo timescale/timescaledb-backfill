@@ -4,25 +4,34 @@ use crate::logging::setup_logging;
 use crate::task::TaskType;
 use crate::timescale::{initialize_source_proc_schema, initialize_target_proc_schema};
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use console::Term;
+use futures_lite::FutureExt;
 use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
+use std::backtrace::Backtrace;
+use std::cell::RefCell;
+use std::fmt::{self, Display, Formatter};
+use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
+use telemetry::{report, Telemetry};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 use tokio_postgres::Config;
 use tracing::{debug, error};
+use verify::FAILED_VERIFICATIONS;
 
 mod caggs;
 mod connect;
 mod execute;
 mod logging;
 mod sql;
+mod storage;
 mod task;
+mod telemetry;
 mod timescale;
 mod verify;
 mod workers;
@@ -30,6 +39,24 @@ mod workers;
 static CTRLC_COUNT: AtomicU32 = AtomicU32::new(0);
 
 static TERM: Lazy<Term> = Lazy::new(Term::stdout);
+
+thread_local! {
+    static BACKTRACE: RefCell<Option<Backtrace>> = RefCell::new(None);
+}
+
+#[derive(Debug)]
+struct PanicError {
+    reason: String,
+    backtrace: Backtrace,
+}
+
+impl std::error::Error for PanicError {}
+
+impl Display for PanicError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "caught panic: {}", self.reason)
+    }
+}
 
 #[derive(Parser, Debug)]
 pub struct StageConfig {
@@ -147,11 +174,59 @@ pub enum Command {
     RefreshCaggs(RefreshCaggsConfig),
 }
 
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Command::Stage(_) => write!(f, "stage"),
+            Command::Copy(_) => write!(f, "copy"),
+            Command::Verify(_) => write!(f, "verify"),
+            Command::Clean(_) => write!(f, "clean"),
+            Command::RefreshCaggs(_) => write!(f, "refresh_caggs"),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     #[command(subcommand)]
     command: Command,
+    #[arg(long, default_value_t = false)]
+    disable_telemetry: bool,
+}
+
+#[derive(Debug)]
+enum CommandResult {
+    Stage(StageResult),
+    Copy(CopyResult),
+    Verify(VerifyResult),
+    Clean(CleanResult),
+    RefreshCaggs(RefreshCaggsResult),
+}
+
+#[derive(Debug)]
+struct StageResult {
+    staged_tasks: usize,
+}
+
+#[derive(Debug)]
+struct CopyResult {
+    tasks_finished: usize,
+    tasks_total_bytes: usize,
+}
+
+#[derive(Debug)]
+struct VerifyResult {
+    tasks_finished: usize,
+    tasks_failures: usize,
+}
+
+#[derive(Debug)]
+struct CleanResult {}
+
+#[derive(Debug)]
+struct RefreshCaggsResult {
+    refreshed_caggs: usize,
 }
 
 #[tokio::main]
@@ -159,133 +234,62 @@ async fn main() -> Result<()> {
     setup_logging();
 
     let args = Args::parse();
-    debug!("{args:?}");
 
+    std::panic::set_hook(Box::new(|_| {
+        // Smuggle the backtrace on panic, see: https://stackoverflow.com/a/73711057/867412
+        let trace = Backtrace::force_capture();
+        BACKTRACE.with(move |b| b.borrow_mut().replace(trace));
+    }));
+
+    let start = Instant::now();
+
+    let command_result = match AssertUnwindSafe(run(&args)).catch_unwind().await {
+        Ok(r) => r,
+        Err(e) => {
+            let backtrace = BACKTRACE.with(|b| b.borrow_mut().take()).unwrap();
+
+            // The content of the error is the object which was passed to
+            // `panic!()`, so effectively it can be anything. It can always
+            // be downcast to &str.
+            let reason = match e.downcast::<&str>() {
+                Ok(r) => (*r).to_string(),
+                Err(_) => String::from("unknown"),
+            };
+            Err(anyhow!(PanicError { reason, backtrace }))
+        }
+    };
+
+    let command_duration = start.elapsed();
+
+    if let Ok(command_result) = command_result.as_ref() {
+        print_summary(command_result, command_duration)?;
+    }
+
+    if !args.disable_telemetry {
+        let telemetry_report =
+            report_telemetry(&args.command, command_duration, command_result.as_ref()).await;
+        // We don't want to return an error to users if we fail to write
+        // telemetry.
+        if cfg!(debug_assertions) {
+            telemetry_report?;
+        }
+    }
+
+    if let Err(err) = command_result {
+        bail!(err);
+    }
+
+    Ok(())
+}
+
+async fn run(args: &Args) -> Result<CommandResult> {
     match args.command {
-        Command::Stage(args) => {
-            let source_config = Config::from_str(&args.source)?;
-            let target_config = Config::from_str(&args.target)?;
-
-            let mut source = Source::connect(&source_config).await?;
-            let mut target = Target::connect(&target_config).await?;
-
-            initialize_source_proc_schema(&mut source).await?;
-            initialize_target_proc_schema(&target).await?;
-
-            task::load_queue(
-                &mut source,
-                &mut target,
-                args.filter,
-                args.cascade_up,
-                args.cascade_down,
-                args.until,
-                args.snapshot,
-            )
-            .await
-        }
-        Command::Copy(args) => {
-            let start = Instant::now();
-            let source_config = Config::from_str(&args.source)?;
-            let target_config = Config::from_str(&args.target)?;
-
-            // Enclose DB clients in a new block to ensure they go out of scope
-            // as soon as possible. This helps to drop the database connections
-            // promptly.
-            {
-                let mut source = Source::connect(&source_config).await?;
-                initialize_source_proc_schema(&mut source).await?;
-            }
-
-            let task_count = {
-                let target = Target::connect(&target_config).await?;
-                initialize_target_proc_schema(&target).await?;
-                task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
-            };
-
-            TERM.write_line(&format!(
-                "Copying {task_count} chunks with {} workers",
-                args.parallelism
-            ))?;
-
-            let receiver = create_ctrl_c_handler().await?;
-
-            let pool = workers::Pool::new(
-                args.parallelism.into(),
-                &source_config,
-                &target_config,
-                task_count,
-                receiver,
-                TaskType::Copy,
-            )
-            .await?;
-
-            pool.join().await.with_context(|| "worker pool error")?;
-            TERM.write_line(&format!(
-                "Copied {} from {} chunks in {}",
-                TOTAL_BYTES_COPIED.load(Relaxed).human_count_bytes(),
-                PROCESSED_COUNT.load(Relaxed),
-                start.elapsed().human_duration()
-            ))?;
-            Ok(())
-        }
-        Command::Verify(args) => {
-            let start = Instant::now();
-            let source_config = Config::from_str(&args.source)?;
-            let target_config = Config::from_str(&args.target)?;
-
-            // Enclose DB clients in a new block to ensure they go out of scope
-            // as soon as possible. This helps to drop the database connections
-            // promptly.
-            {
-                let mut source = Source::connect(&source_config).await?;
-                initialize_source_proc_schema(&mut source).await?;
-            }
-
-            let task_count = {
-                let target = Target::connect(&target_config).await?;
-                initialize_target_proc_schema(&target).await?;
-                task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Verify)
-                    .await?
-            };
-
-            TERM.write_line(&format!(
-                "Verifying {task_count} chunks with {} workers",
-                args.parallelism
-            ))?;
-
-            let receiver = create_ctrl_c_handler().await?;
-
-            let pool = workers::Pool::new(
-                args.parallelism.into(),
-                &source_config,
-                &target_config,
-                task_count,
-                receiver,
-                TaskType::Verify,
-            )
-            .await?;
-
-            pool.join().await.with_context(|| "worker pool error")?;
-
-            TERM.write_line(&format!(
-                "Verifed {task_count} chunks in {}",
-                start.elapsed().human_duration(),
-            ))?;
-
-            Ok(())
-        }
-        Command::Clean(args) => {
-            let target_config = Config::from_str(&args.target)?;
-            task::clean(&target_config).await?;
-            TERM.write_line("Cleaned target")?;
-            Ok(())
-        }
-        Command::RefreshCaggs(args) => {
-            let source = Source::connect(&Config::from_str(&args.source)?).await?;
-            let target = Target::connect(&Config::from_str(&args.target)?).await?;
-            caggs::refresh_caggs(&source, &target, args.filter.as_ref()).await?;
-            TERM.write_line("Refreshed continuous aggregates")?;
-            Ok(())
+        Command::Stage(ref args) => stage(args).await.map(CommandResult::Stage),
+        Command::Copy(ref args) => copy(args).await.map(CommandResult::Copy),
+        Command::Verify(ref args) => verify(args).await.map(CommandResult::Verify),
+        Command::Clean(ref args) => clean(args).await.map(CommandResult::Clean),
+        Command::RefreshCaggs(ref args) => {
+            refresh_caggs(args).await.map(CommandResult::RefreshCaggs)
         }
     }
 }
@@ -319,4 +323,221 @@ async fn create_ctrl_c_handler() -> Result<UnboundedReceiver<PoolMessage>> {
     });
 
     Ok(receiver)
+}
+
+async fn stage(config: &StageConfig) -> Result<StageResult> {
+    let source_config = Config::from_str(&config.source)?;
+    let target_config = Config::from_str(&config.target)?;
+
+    let mut source = Source::connect(&source_config).await?;
+    let mut target = Target::connect(&target_config).await?;
+
+    initialize_source_proc_schema(&mut source).await?;
+    initialize_target_proc_schema(&target).await?;
+
+    let staged_tasks = task::load_queue(
+        &mut source,
+        &mut target,
+        config.filter.as_ref(),
+        config.cascade_up,
+        config.cascade_down,
+        &config.until,
+        config.snapshot.as_ref(),
+    )
+    .await?;
+
+    Ok(StageResult { staged_tasks })
+}
+
+async fn copy(config: &CopyConfig) -> Result<CopyResult> {
+    let source_config = Config::from_str(&config.source)?;
+    let target_config = Config::from_str(&config.target)?;
+
+    // Enclose DB clients in a new block to ensure they go out of scope
+    // as soon as possible. This helps to drop the database connections
+    // promptly.
+    {
+        let mut source = Source::connect(&source_config).await?;
+        initialize_source_proc_schema(&mut source).await?;
+    }
+
+    let task_count = {
+        let target = Target::connect(&target_config).await?;
+        initialize_target_proc_schema(&target).await?;
+        task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
+    };
+
+    TERM.write_line(&format!(
+        "Copying {task_count} chunks with {} workers",
+        config.parallelism
+    ))?;
+
+    let receiver = create_ctrl_c_handler().await?;
+
+    let pool = workers::Pool::new(
+        config.parallelism.into(),
+        &source_config,
+        &target_config,
+        task_count,
+        receiver,
+        TaskType::Copy,
+    )
+    .await?;
+
+    pool.join().await.with_context(|| "worker pool error")?;
+
+    Ok(CopyResult {
+        tasks_finished: PROCESSED_COUNT.load(Relaxed),
+        tasks_total_bytes: TOTAL_BYTES_COPIED.load(Relaxed),
+    })
+}
+
+async fn verify(config: &VerifyConfig) -> Result<VerifyResult> {
+    let source_config = Config::from_str(&config.source)?;
+    let target_config = Config::from_str(&config.target)?;
+
+    // Enclose DB clients in a new block to ensure they go out of scope
+    // as soon as possible. This helps to drop the database connections
+    // promptly.
+    {
+        let mut source = Source::connect(&source_config).await?;
+        initialize_source_proc_schema(&mut source).await?;
+    }
+
+    let task_count = {
+        let target = Target::connect(&target_config).await?;
+        initialize_target_proc_schema(&target).await?;
+        task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Verify).await?
+    };
+
+    TERM.write_line(&format!(
+        "Verifying {task_count} chunks with {} workers",
+        config.parallelism
+    ))?;
+
+    let receiver = create_ctrl_c_handler().await?;
+
+    let pool = workers::Pool::new(
+        config.parallelism.into(),
+        &source_config,
+        &target_config,
+        task_count,
+        receiver,
+        TaskType::Verify,
+    )
+    .await?;
+
+    pool.join().await.with_context(|| "worker pool error")?;
+
+    Ok(VerifyResult {
+        tasks_finished: PROCESSED_COUNT.load(Relaxed),
+        tasks_failures: FAILED_VERIFICATIONS.load(Relaxed),
+    })
+}
+
+async fn clean(config: &CleanConfig) -> Result<CleanResult> {
+    let target_config = Config::from_str(&config.target)?;
+    task::clean(&target_config).await?;
+    Ok(CleanResult {})
+}
+
+async fn refresh_caggs(config: &RefreshCaggsConfig) -> Result<RefreshCaggsResult> {
+    let source = Source::connect(&Config::from_str(&config.source)?).await?;
+    let target = Target::connect(&Config::from_str(&config.target)?).await?;
+    let refreshed_caggs = caggs::refresh_caggs(&source, &target, config.filter.as_ref()).await?;
+    Ok(RefreshCaggsResult { refreshed_caggs })
+}
+
+fn print_summary(command_result: &CommandResult, duration: Duration) -> Result<()> {
+    match command_result {
+        CommandResult::Stage(result) => TERM
+            .write_line(&format!(
+                "Staged {} chunks to copy.\nExecute the 'copy' command to migrate the data.",
+                result.staged_tasks,
+            ))
+            .map_err(anyhow::Error::from),
+        CommandResult::Copy(result) => TERM
+            .write_line(&format!(
+                "Copied {} from {} chunks in {}.\nExecute the 'verify' command to assert data integrity.",
+                result.tasks_total_bytes.human_count_bytes(),
+                result.tasks_finished,
+                duration.human_duration(),
+            ))
+            .map_err(anyhow::Error::from),
+        CommandResult::Verify(result) => TERM
+            .write_line(&format!(
+                "Verifed {} chunks in {}.\nExecute the 'clean' command to remove the backfill administrative schema from the target database.",
+                result.tasks_finished,
+                duration.human_duration(),
+            ))
+            .map_err(anyhow::Error::from),
+        CommandResult::Clean(_) => TERM
+            .write_line("Removed backfill administrative schema from target database")
+            .map_err(anyhow::Error::from),
+        CommandResult::RefreshCaggs(_) => TERM
+            .write_line("Refreshed continuous aggregates")
+            .map_err(anyhow::Error::from),
+    }
+}
+
+async fn target_from_command(command: &Command) -> Result<Target> {
+    let raw_target_config = match command {
+        Command::Stage(args) => &args.target,
+        Command::Verify(args) => &args.target,
+        Command::Copy(args) => &args.target,
+        Command::RefreshCaggs(args) => &args.target,
+        Command::Clean(args) => &args.target,
+    };
+    let target_config = Config::from_str(raw_target_config)?;
+    Target::connect(&target_config).await
+}
+
+async fn source_from_command(command: &Command) -> Result<Option<Source>> {
+    let raw_source_config = match command {
+        Command::Stage(args) => &args.source,
+        Command::Copy(args) => &args.source,
+        Command::Verify(args) => &args.source,
+        Command::RefreshCaggs(args) => &args.source,
+        Command::Clean(_) => return Ok(None),
+    };
+    let source_config = Config::from_str(raw_source_config)?;
+    Ok(Some(Source::connect(&source_config).await?))
+}
+
+async fn report_telemetry(
+    command: &Command,
+    command_duration: Duration,
+    command_result: Result<&CommandResult, &anyhow::Error>,
+) -> Result<()> {
+    let target = target_from_command(command).await?;
+
+    let mut telemetry = Telemetry::from_target_session(&target)
+        .await?
+        .with_command(command.to_string())
+        .with_command_duration(command_duration);
+
+    // If there's any issue connecting to source we keep going and report
+    // the available telemetry.
+    if let Ok(Some(mut source)) = source_from_command(command).await {
+        telemetry = telemetry.with_source_db(&mut source).await;
+    }
+
+    telemetry = match command_result {
+        Ok(command_result) => match command_result {
+            CommandResult::Copy(result) => {
+                telemetry.with_copied_tasks(result.tasks_finished, result.tasks_total_bytes)
+            }
+            CommandResult::Stage(result) => telemetry.with_staged_tasks(result.staged_tasks),
+            CommandResult::Verify(result) => {
+                telemetry.with_verified_tasks(result.tasks_finished, result.tasks_failures)
+            }
+            CommandResult::RefreshCaggs(result) => {
+                telemetry.with_refreshed_caggs(result.refreshed_caggs)
+            }
+            CommandResult::Clean(_) => return Ok(()),
+        },
+        Err(e) => telemetry.with_error(e),
+    };
+    report(&target, &telemetry).await?;
+    Ok(())
 }

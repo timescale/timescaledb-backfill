@@ -19,3 +19,13 @@ create table __backfill.task
 create unique index on __backfill.task (priority) where (worked is null);
 create unique index on __backfill.task (chunk_schema, chunk_name);
 create unique index on __backfill.task (priority) where (verified is null and worked is not null);
+
+create table __backfill.session
+(
+  -- If we drop support for PG12 we could do
+  -- id uuid default gen_random_uuid(),
+  -- and add an insert statement with default values.
+  id uuid not null
+, created_at timestamptz default now()
+, one_row_constraint bool default true not null unique check (one_row_constraint)
+);

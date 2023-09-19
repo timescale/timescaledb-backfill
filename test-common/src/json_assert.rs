@@ -24,9 +24,31 @@ impl<'a> JsonAssert<'a> {
         );
     }
 
+    pub fn has_array_value<T>(&self, key: &str, value: Vec<T>)
+    where
+        T: PartialEq + Debug,
+        Value: PartialEq<T>,
+    {
+        let is_value = self.inner.get(key).unwrap().as_array().unwrap();
+        assert!(
+            is_value.eq(&value),
+            "key '{key}' is: {is_value:?}, want: {value:?}"
+        );
+    }
+
+    pub fn has_null(&self, key: &str) {
+        let value = self.inner.get(key).unwrap();
+        assert!(value.is_null(), "{} is not null", key);
+    }
+
     pub fn has_string(&self, key: &str) {
         let value = self.inner.get(key).unwrap();
-        assert!(value.is_string());
+        assert!(value.is_string(), "{} is not a string", key);
+    }
+
+    pub fn has_number(&self, key: &str) {
+        let value = self.inner.get(key).unwrap();
+        assert!(value.is_number(), "{} is not a numver", key);
     }
 
     pub fn has_number_within<T, U>(&self, key: &str, value: T, tolerance: U)
