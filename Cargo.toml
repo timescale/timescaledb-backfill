@@ -19,7 +19,6 @@ codegen-units = 1
 anyhow = { version = "1.0.75", default-features = false, features = ["std", "backtrace"] }
 async-channel = "1.9.0"
 bytes = { version = "1.4.0", default-features = false }
-chrono = { version = "0.4.26", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.3.23", default-features = false, features = ["std", "help", "error-context", "env", "derive"] }
 console = "0.15.7"
 ctrlc = "3.4.0"
@@ -35,11 +34,12 @@ serde = { version = "1.0.185", features = ["derive"] }
 serde_json = "1.0.105"
 serde_yaml = "0.9.25"
 tokio = { version = "1.32.0", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "time"], default-features = false }
-tokio-postgres = { version = "0.7.9", features = ["runtime", "with-serde_json-1", "with-chrono-0_4"], default-features = false }
+tokio-postgres = { version = "0.7.9", features = ["runtime", "with-serde_json-1", "with-uuid-1"], default-features = false }
 tokio-postgres-rustls = { version = "0.10.0", default-features = false, git = "https://github.com/JamesGuthrie/tokio-postgres-rustls.git", rev = "b78dda2a9a1a23d3dbed4ecded7defbbcd831b37" }
 tokio-util = "0.7.8"
 tracing = { version = "0.1.37", default-features = false, features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.17", default-features = false, features = ["env-filter", "fmt", "json", "std"] }
+uuid = { version = "1.4.1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 assert_cmd = "2.0.12"
