@@ -1,3 +1,7 @@
+use anyhow::{bail, Result};
+use tokio_postgres::error::SqlState;
+use tokio_postgres::GenericClient;
+
 pub fn quote_table_name(schema_name: &str, table_name: &str) -> String {
     format!("{}.{}", quote_ident(schema_name), quote_ident(table_name))
 }
@@ -16,4 +20,19 @@ pub fn quote_ident(value: &str) -> String {
     }
     result.push('"');
     result
+}
+
+pub async fn assert_regex<T: GenericClient>(client: &T, table_filter: &String) -> Result<()> {
+    let x = client
+        .query(
+            "select regexp_like('this is only a test', $1::text)",
+            &[&table_filter],
+        )
+        .await;
+    if x.is_err()
+        && x.unwrap_err().code().unwrap().code() == SqlState::INVALID_REGULAR_EXPRESSION.code()
+    {
+        bail!("filter argument '{table_filter}' is not a valid regular expression");
+    }
+    Ok(())
 }

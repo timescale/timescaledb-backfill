@@ -227,6 +227,7 @@ impl TestConfig for TestConfigStage {
 pub struct TestConfigRefreshCaggs {
     source: TestConnectionString,
     target: TestConnectionString,
+    filter: Option<String>,
 }
 
 impl TestConfigRefreshCaggs {
@@ -237,18 +238,30 @@ impl TestConfigRefreshCaggs {
         Self {
             source: source.connection_string(),
             target: target.connection_string(),
+            filter: None,
+        }
+    }
+
+    pub fn with_filter(&mut self, filter: &str) -> Self {
+        Self {
+            filter: Some(filter.to_owned()),
+            ..self.clone()
         }
     }
 }
 
 impl TestConfig for TestConfigRefreshCaggs {
     fn args(&self) -> Vec<OsString> {
-        vec![
+        let mut args = vec![
             OsString::from("--source"),
             OsString::from(self.source.as_str()),
             OsString::from("--target"),
             OsString::from(self.target.as_str()),
-        ]
+        ];
+        if let Some(filter) = self.filter.as_ref() {
+            args.extend_from_slice(&[OsString::from("--filter"), OsString::from(filter)]);
+        }
+        args
     }
 
     fn action(&self) -> &str {

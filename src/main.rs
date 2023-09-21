@@ -125,6 +125,10 @@ pub struct RefreshCaggsConfig {
     /// Connection string to the target database
     #[arg(long)]
     target: String,
+
+    /// Posix regular expression used to match `schema.view`
+    #[arg(short, long)]
+    filter: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -279,7 +283,7 @@ async fn main() -> Result<()> {
         Command::RefreshCaggs(args) => {
             let source = Source::connect(&Config::from_str(&args.source)?).await?;
             let target = Target::connect(&Config::from_str(&args.target)?).await?;
-            caggs::refresh_caggs(&source, &target).await?;
+            caggs::refresh_caggs(&source, &target, args.filter.as_ref()).await?;
             TERM.write_line("Refreshed continuous aggregates")?;
             Ok(())
         }
