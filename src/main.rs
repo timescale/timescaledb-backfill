@@ -130,6 +130,10 @@ pub struct RefreshCaggsConfig {
     /// Connection string to the target database
     #[arg(long)]
     target: String,
+
+    /// Posix regular expression used to match `schema.view`
+    #[arg(short, long)]
+    filter: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -394,7 +398,7 @@ async fn clean(config: &CleanConfig) -> Result<CleanResult> {
 async fn refresh_caggs(config: &RefreshCaggsConfig) -> Result<RefreshCaggsResult> {
     let source = Source::connect(&Config::from_str(&config.source)?).await?;
     let target = Target::connect(&Config::from_str(&config.target)?).await?;
-    let refreshed_caggs = caggs::refresh_caggs(&source, &target).await?;
+    let refreshed_caggs = caggs::refresh_caggs(&source, &target, config.filter.as_ref()).await?;
     Ok(RefreshCaggsResult { refreshed_caggs })
 }
 

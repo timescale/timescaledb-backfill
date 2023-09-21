@@ -1,4 +1,5 @@
 use crate::connect::{Source, Target};
+use crate::sql::assert_regex;
 use crate::timescale::{initialize_target_proc_schema, set_query_target_proc_schema};
 use anyhow::{Context, Result};
 use tokio_postgres::types::ToSql;
@@ -6,12 +7,20 @@ use tokio_postgres::Client;
 
 /// Refresh the continuous aggregates in `target` based on the watermark values
 /// in `source`.
-pub(crate) async fn refresh_caggs(source: &Source, target: &Target) -> Result<usize> {
+pub(crate) async fn refresh_caggs(
+    source: &Source,
+    target: &Target,
+    filter: Option<&String>,
+) -> Result<usize> {
+    if let Some(filter) = filter {
+        assert_regex(&source.client, filter).await?;
+    }
     initialize_target_proc_schema(target).await?;
-    let watermarks = get_watermarks(source).await?;
+    let watermarks = get_watermarks(source, filter).await?;
     refresh_up_to_watermarks(target, watermarks).await
 }
 
+#[derive(Debug)]
 struct Watermark {
     /// The schema that the continuous aggregate's view is in
     user_view_schema: String,
@@ -150,29 +159,39 @@ fn build_values_list(watermarks: &[Watermark]) -> (String, Vec<&(dyn ToSql + Syn
 
 /// `get_watermarks` returns a `Watermark` for every continuous aggregate in
 /// `source`.
-async fn get_watermarks(source: &Source) -> Result<Vec<Watermark>> {
-    let query = if has_watermark_table(&source.client).await? {
-        r"
-        SELECT
-           c.user_view_schema
-         , c.user_view_name
-         , w.watermark
-        FROM _timescaledb_catalog.continuous_agg c
-        INNER JOIN _timescaledb_catalog.continuous_aggs_watermark w ON (c.mat_hypertable_id = w.mat_hypertable_id);
-        "
+async fn get_watermarks(source: &Source, filter: Option<&String>) -> Result<Vec<Watermark>> {
+    let snippet = if has_watermark_table(&source.client).await? {
+        "INNER JOIN _timescaledb_catalog.continuous_aggs_watermark w ON (c.mat_hypertable_id = w.mat_hypertable_id)"
     } else {
-        r"
-        SELECT
-          c.user_view_schema
-        , c.user_view_name
-        , w.watermark
-        FROM _timescaledb_catalog.continuous_agg c
-        CROSS JOIN LATERAL _timescaledb_internal.cagg_watermark(c.mat_hypertable_id) w(watermark);
-        "
+        "CROSS JOIN LATERAL _timescaledb_internal.cagg_watermark(c.mat_hypertable_id) w(watermark)"
     };
+
+    let query = format!(
+        r"
+WITH RECURSIVE
+    src AS (
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id
+        FROM _timescaledb_catalog.continuous_agg c
+        {snippet}
+        WHERE
+            $1::text IS NULL
+            OR format('%I.%I', c.user_view_schema, c.user_view_name) ~* $1
+        UNION ALL
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id
+        FROM src
+        INNER JOIN
+            _timescaledb_catalog.continuous_agg c
+            ON (src.mat_hypertable_id = c.parent_mat_hypertable_id)
+        {snippet}
+        WHERE $1::text is not null
+    )
+SELECT user_view_schema, user_view_name, watermark
+FROM src;"
+    );
+
     let rows = source
         .client
-        .query(query, &[])
+        .query(&query, &[&filter])
         .await
         .context("get watermarks")?;
     Ok(rows
