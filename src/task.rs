@@ -1,4 +1,5 @@
 use crate::connect::{Source, Target};
+use crate::sql::assert_regex;
 use crate::timescale::{set_query_source_proc_schema, Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Result};
@@ -146,22 +147,6 @@ async fn init_schema(target: &mut Target) -> Result<()> {
     Ok(())
 }
 
-async fn check_filter(source: &mut Source, table_filter: String) -> Result<()> {
-    let source_tx = source.transaction().await?;
-    let x = source_tx
-        .query(
-            "select regexp_like('this is only a test', $1::text)",
-            &[&table_filter],
-        )
-        .await;
-    if x.is_err()
-        && x.unwrap_err().code().unwrap().code() == SqlState::INVALID_REGULAR_EXPRESSION.code()
-    {
-        bail!("filter argument '{table_filter}' is not a valid regular expression");
-    }
-    Ok(())
-}
-
 async fn check_until(source: &mut Source, until: &String) -> Result<()> {
     let mut err_count = 0;
     {
@@ -203,8 +188,8 @@ pub async fn load_queue(
     until: String,
     snapshot: Option<String>,
 ) -> Result<()> {
-    if filter.is_some() {
-        check_filter(source, filter.clone().unwrap()).await?;
+    if let Some(filter) = filter.as_ref() {
+        assert_regex(&source.client, filter).await?;
     }
     check_until(source, &until).await?;
 
