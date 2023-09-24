@@ -11,12 +11,14 @@ pub(crate) async fn refresh_caggs(
     source: &Source,
     target: &Target,
     filter: Option<&String>,
+    cascade_up: bool,
+    cascade_down: bool,
 ) -> Result<usize> {
     if let Some(filter) = filter {
         assert_regex(&source.client, filter).await?;
     }
     initialize_target_proc_schema(target).await?;
-    let watermarks = get_watermarks(source, filter).await?;
+    let watermarks = get_watermarks(source, filter, cascade_up, cascade_down).await?;
     refresh_up_to_watermarks(target, watermarks).await
 }
 
@@ -159,7 +161,12 @@ fn build_values_list(watermarks: &[Watermark]) -> (String, Vec<&(dyn ToSql + Syn
 
 /// `get_watermarks` returns a `Watermark` for every continuous aggregate in
 /// `source`.
-async fn get_watermarks(source: &Source, filter: Option<&String>) -> Result<Vec<Watermark>> {
+async fn get_watermarks(
+    source: &Source,
+    filter: Option<&String>,
+    cascade_up: bool,
+    cascade_down: bool,
+) -> Result<Vec<Watermark>> {
     let snippet = if has_watermark_table(&source.client).await? {
         "INNER JOIN _timescaledb_catalog.continuous_aggs_watermark w ON (c.mat_hypertable_id = w.mat_hypertable_id)"
     } else {
@@ -170,28 +177,52 @@ async fn get_watermarks(source: &Source, filter: Option<&String>) -> Result<Vec<
         r"
 WITH RECURSIVE
     src AS (
-        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id, c.raw_hypertable_id
         FROM _timescaledb_catalog.continuous_agg c
         {snippet}
         WHERE
             $1::text IS NULL
             OR format('%I.%I', c.user_view_schema, c.user_view_name) ~* $1
-        UNION ALL
+    )
+    , up as
+    (
         SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id
         FROM src
-        INNER JOIN
-            _timescaledb_catalog.continuous_agg c
-            ON (src.mat_hypertable_id = c.parent_mat_hypertable_id)
+        JOIN _timescaledb_catalog.continuous_agg c ON (src.mat_hypertable_id = c.raw_hypertable_id)
         {snippet}
-        WHERE $1::text is not null
+        WHERE $1::text IS NOT NULL AND $2::bool -- cascade up?
+        UNION
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.mat_hypertable_id
+        FROM up
+        INNER JOIN _timescaledb_catalog.continuous_agg c ON (up.mat_hypertable_id = c.raw_hypertable_id)
+        {snippet}
     )
-SELECT user_view_schema, user_view_name, watermark
-FROM src;"
+    , down as
+    (
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.raw_hypertable_id
+        FROM src
+        INNER JOIN _timescaledb_catalog.continuous_agg c ON (src.raw_hypertable_id = c.mat_hypertable_id)
+        {snippet}
+        WHERE $1::text IS NOT NULL AND $3::bool -- cascade down ?
+        UNION
+        SELECT c.user_view_schema, c.user_view_name, w.watermark, c.raw_hypertable_id
+        FROM down
+        INNER JOIN _timescaledb_catalog.continuous_agg c ON (down.raw_hypertable_id = c.mat_hypertable_id)
+        {snippet}
+    )
+    SELECT user_view_schema, user_view_name, watermark
+    FROM src
+    UNION
+    SELECT user_view_schema, user_view_name, watermark
+    FROM up
+    UNION
+    SELECT user_view_schema, user_view_name, watermark
+    FROM down;"
     );
 
     let rows = source
         .client
-        .query(&query, &[&filter])
+        .query(&query, &[&filter, &cascade_up, &cascade_down])
         .await
         .context("get watermarks")?;
     Ok(rows
