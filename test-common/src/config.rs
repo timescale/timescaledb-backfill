@@ -228,6 +228,8 @@ pub struct TestConfigRefreshCaggs {
     source: TestConnectionString,
     target: TestConnectionString,
     filter: Option<String>,
+    cascade_up: bool,
+    cascade_down: bool,
 }
 
 impl TestConfigRefreshCaggs {
@@ -239,12 +241,28 @@ impl TestConfigRefreshCaggs {
             source: source.connection_string(),
             target: target.connection_string(),
             filter: None,
+            cascade_up: false,
+            cascade_down: false,
         }
     }
 
     pub fn with_filter(&mut self, filter: &str) -> Self {
         Self {
             filter: Some(filter.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_up(&mut self) -> Self {
+        Self {
+            cascade_up: true,
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_down(&mut self) -> Self {
+        Self {
+            cascade_down: true,
             ..self.clone()
         }
     }
@@ -260,6 +278,12 @@ impl TestConfig for TestConfigRefreshCaggs {
         ];
         if let Some(filter) = self.filter.as_ref() {
             args.extend_from_slice(&[OsString::from("--filter"), OsString::from(filter)]);
+        }
+        if self.cascade_up {
+            args.extend_from_slice(&[OsString::from("--cascade-up")]);
+        }
+        if self.cascade_down {
+            args.extend_from_slice(&[OsString::from("--cascade-down")]);
         }
         args
     }

@@ -156,6 +156,16 @@ pub struct RefreshCaggsConfig {
     /// Posix regular expression used to match `schema.view`
     #[arg(short, long)]
     filter: Option<String>,
+
+    /// If filter is provided, automatically include continuous aggregates
+    /// which depends upon continuous aggregates that match the filter
+    #[arg(short = 'U', long = "cascade-up")]
+    cascade_up: bool,
+
+    /// If filter is provided, automatically include continuous aggregates on
+    /// which continuous aggregates matching the filter depend
+    #[arg(short = 'D', long = "cascade-down")]
+    cascade_down: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -444,7 +454,14 @@ async fn clean(config: &CleanConfig) -> Result<CleanResult> {
 async fn refresh_caggs(config: &RefreshCaggsConfig) -> Result<RefreshCaggsResult> {
     let source = Source::connect(&Config::from_str(&config.source)?).await?;
     let target = Target::connect(&Config::from_str(&config.target)?).await?;
-    let refreshed_caggs = caggs::refresh_caggs(&source, &target, config.filter.as_ref()).await?;
+    let refreshed_caggs = caggs::refresh_caggs(
+        &source,
+        &target,
+        config.filter.as_ref(),
+        config.cascade_up,
+        config.cascade_down,
+    )
+    .await?;
     Ok(RefreshCaggsResult { refreshed_caggs })
 }
 

@@ -6,7 +6,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
 use test_common::*;
@@ -1811,8 +1811,40 @@ Verifed 1 chunks in"#;
     Ok(())
 }
 
-#[test]
-fn refresh_cagg() -> Result<()> {
+macro_rules! generate_refresh_caggs_tests {
+    ($(($func:ident, $testcase:expr),)*) => {
+        $(
+            #[test]
+            fn $func() -> Result<()> {
+                run_refresh_caggs_test($testcase)
+            }
+        )*
+    }
+}
+
+#[derive(Debug)]
+struct RefreshCaggsTestCase<'a, F, G>
+where
+    F: Fn(&mut DbAssert),
+    G: Fn(Output),
+{
+    filter: Option<Filter<'a>>,
+    asserts: Box<F>,
+    assert_output: Box<G>,
+}
+
+const CAGG_T1_INITIAL_WATERMARK: i64 = 1694044800000000;
+const CAGG_T1_2_INITIAL_WATERMARK: i64 = 1695945600000000;
+const CAGG_T2_INITIAL_WATERMARK: i64 = 10;
+const CAGG_T1_REFRESHED_WATERMARK: i64 = 1696636800000000;
+const CAGG_T1_2_REFRESHED_WATERMARK: i64 = 1698537600000000;
+const CAGG_T2_REFRESHED_WATERMARK: i64 = 40;
+
+fn run_refresh_caggs_test<F, G>(test_case: RefreshCaggsTestCase<F, G>) -> Result<()>
+where
+    F: Fn(&mut DbAssert),
+    G: Fn(Output),
+{
     let _ = pretty_env_logger::try_init();
     let docker = testcontainers::clients::Cli::default();
 
@@ -1832,16 +1864,12 @@ fn refresh_cagg() -> Result<()> {
         .unwrap()
         .with_name("target");
 
-    let watermark_cagg_t1 = 1694044800000000;
-    let watermark_cagg_t1_2 = 1695945600000000;
-    let watermark_cagg_t2 = 10;
-
-    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
+    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_INITIAL_WATERMARK);
+    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
+    target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_INITIAL_WATERMARK);
+    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+    target_dbassert.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
 
     let dual_write_query: &str = r"
     insert into t1 values ('2023-10-06 19:27:30.024001+02', 1, 1);
@@ -1867,114 +1895,135 @@ fn refresh_cagg() -> Result<()> {
         PsqlInput::Sql("call refresh_continuous_aggregate('caggs_t2', 0, 40)"),
     )?;
 
-    let watermark_cagg_t1 = 1696636800000000;
-    let watermark_cagg_t1_2 = 1698537600000000;
-    let watermark_cagg_t2 = 40;
-    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
+    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
+    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_REFRESHED_WATERMARK);
+    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_REFRESHED_WATERMARK);
 
-    run_backfill(TestConfigRefreshCaggs::new(
-        &source_container,
-        &target_container,
-    ))
-    .unwrap()
-    .assert()
-    .success()
-    .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)")
-        .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)"))
-        .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)")));
+    let mut config = TestConfigRefreshCaggs::new(&source_container, &target_container);
 
-    target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
+    if let Some(filter) = test_case.filter {
+        config = config.with_filter(filter.filter);
+        config = match filter.cascade {
+            CascadeMode::Up => config.with_cascading_up(),
+            CascadeMode::Down => config.with_cascading_down(),
+            CascadeMode::Both => config.with_cascading_up().with_cascading_down(),
+            CascadeMode::None => config,
+        };
+    }
 
-    target_dbassert.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
+    let output = run_backfill(config).unwrap();
+
+    (test_case.assert_output)(output);
+
+    (test_case.asserts)(&mut target_dbassert);
     Ok(())
 }
 
-#[test]
-fn refresh_cagg_with_filter() -> Result<()> {
-    let _ = pretty_env_logger::try_init();
-    let docker = testcontainers::clients::Cli::default();
-
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
-
-    psql(
-        &source_container,
-        PsqlInput::File(PathBuf::from("tests/source_schema.sql")),
-    )?;
-    copy_skeleton_schema(&source_container, &target_container)?;
-
-    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
-        .unwrap()
-        .with_name("source");
-    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
-        .unwrap()
-        .with_name("target");
-
-    let watermark_cagg_t1 = 1694044800000000;
-    let watermark_cagg_t1_2 = 1695945600000000;
-    let watermark_cagg_t2 = 10;
-
-    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
-
-    let dual_write_query: &str = r"
-    insert into t1 values ('2023-10-06 19:27:30.024001+02', 1, 1);
-    insert into t2 values (30, 1, 1);";
-
-    psql(&source_container, PsqlInput::Sql(dual_write_query))?;
-    psql(&target_container, PsqlInput::Sql(dual_write_query))?;
-
-    psql(
-        &source_container,
-        PsqlInput::Sql(
-            r#"call refresh_continuous_aggregate('"caggs""_T1"', null, '2023-10-07 19:27:30.024001+02')"#,
-        ),
-    )?;
-    psql(
-        &source_container,
-        PsqlInput::Sql(
-            "call refresh_continuous_aggregate('caggs_t1_2', null, '2023-11-06 19:27:30.024001+02')"
-        ),
-    )?;
-    psql(
-        &source_container,
-        PsqlInput::Sql("call refresh_continuous_aggregate('caggs_t2', 0, 40)"),
-    )?;
-
-    let watermark_cagg_t1 = 1696636800000000;
-    let watermark_cagg_t1_2 = 1698537600000000;
-    let old_watermark_cagg_t2 = watermark_cagg_t2;
-    let watermark_cagg_t2 = 40;
-
-    source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    source_dbassert.has_cagg_with_watermark("public", "caggs_t2", watermark_cagg_t2);
-
-    run_backfill(TestConfigRefreshCaggs::new(
-        &source_container,
-        &target_container,
-    ).with_filter("public.\"caggs\"\"_T1\""))
-    .unwrap()
-    .assert()
-    .success()
-    .stdout(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
-        .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)")));
-
-    target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", watermark_cagg_t1);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", watermark_cagg_t1_2);
-    target_dbassert.has_cagg_with_watermark("public", "caggs_t2", old_watermark_cagg_t2);
-
-    target_dbassert.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
-    Ok(())
-}
+generate_refresh_caggs_tests!(
+    (
+        refresh_all_caggs,
+        RefreshCaggsTestCase {
+            filter: None,
+            asserts: Box::new(|target: &mut DbAssert| {
+                target.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_2",
+                    CAGG_T1_2_REFRESHED_WATERMARK,
+                );
+                target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_REFRESHED_WATERMARK);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
+            }),
+            assert_output: Box::new(|output: Output| {
+                output
+            .assert()
+            .success()
+            .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)")
+                .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)"))
+                .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)")));
+            }),
+        }
+    ),
+    (
+        refresh_cagg_with_filter,
+        RefreshCaggsTestCase {
+            filter: Some(Filter {
+                filter: "public.\"caggs\"\"_T1\"",
+                cascade: CascadeMode::None
+            }),
+            asserts: Box::new(|target: &mut DbAssert| {
+                target.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
+                target.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+                target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(1)]);
+            }),
+            assert_output: Box::new(|output: Output| {
+                output
+                .assert()
+                .success()
+                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range").not())
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+            }),
+        }
+    ),
+    (
+        refresh_cagg_with_filter_cascade_up,
+        RefreshCaggsTestCase {
+            filter: Some(Filter {
+                filter: "public.\"caggs\"\"_T1\"",
+                cascade: CascadeMode::Up,
+            }),
+            asserts: Box::new(|target: &mut DbAssert| {
+                target.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_2",
+                    CAGG_T1_2_REFRESHED_WATERMARK,
+                );
+                target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
+            }),
+            assert_output: Box::new(|output: Output| {
+                output
+                .assert()
+                .success()
+                .stdout(
+                    contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+            }),
+        }
+    ),
+    (
+        refresh_cagg_with_filter_cascade_down,
+        RefreshCaggsTestCase {
+            filter: Some(Filter {
+                filter: "public.caggs_t1_2",
+                cascade: CascadeMode::Down,
+            }),
+            asserts: Box::new(|target: &mut DbAssert| {
+                target.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_2",
+                    CAGG_T1_2_REFRESHED_WATERMARK,
+                );
+                target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
+            }),
+            assert_output: Box::new(|output: Output| {
+                output
+                .assert()
+                .success()
+                .stdout(
+                    contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+            }),
+        }
+    ),
+);
 
 #[test]
 fn telemetry_captures_error_reason() -> Result<()> {
