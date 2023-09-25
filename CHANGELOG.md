@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/timescale/timescaledb-backfill/compare/v0.4.1...v0.5.0) (2023-09-25)
+
+
+### Features
+
+* add cascade to caggs-refresh ([623b02d](https://github.com/timescale/timescaledb-backfill/commit/623b02dfa14c220957e3a64580a57031e2e85811))
+* add filter to caggs-refresh ([c6dffa9](https://github.com/timescale/timescaledb-backfill/commit/c6dffa914be2ddca32a8154f592f6d69e48ad871))
+* add refresh-caggs subcommand ([4938627](https://github.com/timescale/timescaledb-backfill/commit/4938627c9c06a99fd62859d6d6940279cd466468))
+* telemetry ([243f671](https://github.com/timescale/timescaledb-backfill/commit/243f6713963b07d790c45574dc0d705e227dda58))
+
+
+### Miscellaneous
+
+* update dependencies ([af36076](https://github.com/timescale/timescaledb-backfill/commit/af36076d5d8282f617d9b861d6c17cd26f8136d0))
+
 ## [0.4.1](https://github.com/timescale/timescaledb-backfill/compare/v0.4.0...v0.4.1) (2023-09-13)
 
 
