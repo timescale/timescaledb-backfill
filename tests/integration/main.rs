@@ -1835,9 +1835,11 @@ where
 
 const CAGG_T1_INITIAL_WATERMARK: i64 = 1694044800000000;
 const CAGG_T1_2_INITIAL_WATERMARK: i64 = 1695945600000000;
+const CAGG_T1_3_INITIAL_WATERMARK: i64 = 1698537600000000;
 const CAGG_T2_INITIAL_WATERMARK: i64 = 10;
-const CAGG_T1_REFRESHED_WATERMARK: i64 = 1696636800000000;
-const CAGG_T1_2_REFRESHED_WATERMARK: i64 = 1698537600000000;
+const CAGG_T1_REFRESHED_WATERMARK: i64 = 1704585600000000;
+const CAGG_T1_2_REFRESHED_WATERMARK: i64 = 1706313600000000;
+const CAGG_T1_3_REFRESHED_WATERMARK: i64 = 1708905600000000;
 const CAGG_T2_REFRESHED_WATERMARK: i64 = 40;
 
 fn run_refresh_caggs_test<F, G>(test_case: RefreshCaggsTestCase<F, G>) -> Result<()>
@@ -1866,13 +1868,15 @@ where
 
     source_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_INITIAL_WATERMARK);
     source_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+    source_dbassert.has_cagg_with_watermark("public", "caggs_t1_3", CAGG_T1_3_INITIAL_WATERMARK);
     source_dbassert.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
     target_dbassert.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_INITIAL_WATERMARK);
     target_dbassert.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+    target_dbassert.has_cagg_with_watermark("public", "caggs_t1_3", CAGG_T1_3_INITIAL_WATERMARK);
     target_dbassert.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
 
     let dual_write_query: &str = r"
-    insert into t1 values ('2023-10-06 19:27:30.024001+02', 1, 1);
+    insert into t1 values ('2024-01-06 19:27:30.024001+02', 1, 1);
     insert into t2 values (30, 1, 1);";
 
     psql(&source_container, PsqlInput::Sql(dual_write_query))?;
@@ -1881,13 +1885,19 @@ where
     psql(
         &source_container,
         PsqlInput::Sql(
-            r#"call refresh_continuous_aggregate('"caggs""_T1"', null, '2023-10-07 19:27:30.024001+02')"#,
+            r#"call refresh_continuous_aggregate('"caggs""_T1"', null, '2024-10-31 02:00:00+02')"#,
         ),
     )?;
     psql(
         &source_container,
         PsqlInput::Sql(
-            "call refresh_continuous_aggregate('caggs_t1_2', null, '2023-11-06 19:27:30.024001+02')"
+            "call refresh_continuous_aggregate('caggs_t1_2', null, '2024-10-31 02:00:00+02')",
+        ),
+    )?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            "call refresh_continuous_aggregate('caggs_t1_3', null, '2024-10-31 02:00:00+02')",
         ),
     )?;
     psql(
@@ -1921,7 +1931,7 @@ where
 
 generate_refresh_caggs_tests!(
     (
-        refresh_all_caggs,
+        refresh_caggs_all,
         RefreshCaggsTestCase {
             filter: None,
             asserts: Box::new(|target: &mut DbAssert| {
@@ -1931,21 +1941,27 @@ generate_refresh_caggs_tests!(
                     "caggs_t1_2",
                     CAGG_T1_2_REFRESHED_WATERMARK,
                 );
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_3",
+                    CAGG_T1_3_REFRESHED_WATERMARK,
+                );
                 target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_REFRESHED_WATERMARK);
-                target.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(4)]);
             }),
             assert_output: Box::new(|output: Output| {
                 output
-            .assert()
-            .success()
-            .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)")
-                .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)"))
-                .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)")));
+                .assert()
+                .success()
+                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)")
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2024-01-07 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2024-01-27 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_3' in range [2023-10-29 00:00:00+00, 2024-02-26 00:00:00+00)")));
             }),
         }
     ),
     (
-        refresh_cagg_with_filter,
+        refresh_caggs_with_filter,
         RefreshCaggsTestCase {
             filter: Some(Filter {
                 filter: "public.\"caggs\"\"_T1\"",
@@ -1954,6 +1970,7 @@ generate_refresh_caggs_tests!(
             asserts: Box::new(|target: &mut DbAssert| {
                 target.has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_REFRESHED_WATERMARK);
                 target.has_cagg_with_watermark("public", "caggs_t1_2", CAGG_T1_2_INITIAL_WATERMARK);
+                target.has_cagg_with_watermark("public", "caggs_t1_3", CAGG_T1_3_INITIAL_WATERMARK);
                 target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
                 target.has_telemetry(vec![assert_refresh_caggs_telemetry(1)]);
             }),
@@ -1961,14 +1978,15 @@ generate_refresh_caggs_tests!(
                 output
                 .assert()
                 .success()
-                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range").not())
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)").not()
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2024-01-07 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2024-01-27 00:00:00+00)").not())
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_3' in range [2023-10-29 00:00:00+00, 2024-02-26 00:00:00+00)").not()));
             }),
         }
     ),
     (
-        refresh_cagg_with_filter_cascade_up,
+        refresh_caggs_with_filter_cascade_up,
         RefreshCaggsTestCase {
             filter: Some(Filter {
                 filter: "public.\"caggs\"\"_T1\"",
@@ -1981,25 +1999,30 @@ generate_refresh_caggs_tests!(
                     "caggs_t1_2",
                     CAGG_T1_2_REFRESHED_WATERMARK,
                 );
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_3",
+                    CAGG_T1_3_REFRESHED_WATERMARK,
+                );
                 target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
-                target.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
             }),
             assert_output: Box::new(|output: Output| {
                 output
                 .assert()
                 .success()
-                .stdout(
-                    contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)"))
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)").not()
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2024-01-07 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2024-01-27 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_3' in range [2023-10-29 00:00:00+00, 2024-02-26 00:00:00+00)")));
             }),
         }
     ),
     (
-        refresh_cagg_with_filter_cascade_down,
+        refresh_caggs_with_filter_cascade_down,
         RefreshCaggsTestCase {
             filter: Some(Filter {
-                filter: "public.caggs_t1_2",
+                filter: "public.caggs_t1_3",
                 cascade: CascadeMode::Down,
             }),
             asserts: Box::new(|target: &mut DbAssert| {
@@ -2009,17 +2032,22 @@ generate_refresh_caggs_tests!(
                     "caggs_t1_2",
                     CAGG_T1_2_REFRESHED_WATERMARK,
                 );
+                target.has_cagg_with_watermark(
+                    "public",
+                    "caggs_t1_3",
+                    CAGG_T1_3_REFRESHED_WATERMARK,
+                );
                 target.has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_INITIAL_WATERMARK);
-                target.has_telemetry(vec![assert_refresh_caggs_telemetry(2)]);
+                target.has_telemetry(vec![assert_refresh_caggs_telemetry(3)]);
             }),
             assert_output: Box::new(|output: Output| {
                 output
                 .assert()
                 .success()
-                .stdout(
-                    contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2023-10-07 00:00:00+00)")
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2023-10-29 00:00:00+00)"))
-                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range").not()));
+                .stdout(contains("Refreshing continuous aggregate 'public'.'caggs_t2' in range [10, 40)").not()
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs\"_T1' in range [2023-09-07 00:00:00+00, 2024-01-07 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_2' in range [2023-09-29 00:00:00+00, 2024-01-27 00:00:00+00)"))
+                    .and(contains("Refreshing continuous aggregate 'public'.'caggs_t1_3' in range [2023-10-29 00:00:00+00, 2024-02-26 00:00:00+00)")));
             }),
         }
     ),

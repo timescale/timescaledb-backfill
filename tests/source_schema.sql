@@ -23,10 +23,21 @@ create materialized view caggs_t1_2
   from "caggs""_T1"
   group by month, key;
 
+-- A heriarchical cagg over the previous
+create materialized view caggs_t1_3
+  with (timescaledb.continuous) as
+  select
+    time_bucket('2 month', "month") as bimonth,
+    key,
+    max(high) as high
+  from "caggs_t1_2"
+  group by bimonth, key;
+
 insert into t1 values ('2023-09-06 19:27:30.024001+02', 1, 1);
 
 call refresh_continuous_aggregate('"caggs""_T1"', null, '2023-09-07 19:27:30.024001+02');
-call refresh_continuous_aggregate('caggs_t1_2', null, '2023-10-07 19:27:30.024001+02');
+call refresh_continuous_aggregate('caggs_t1_2', null, '2023-09-29 02:00:00+02');
+call refresh_continuous_aggregate('caggs_t1_3', null, '2023-10-29 02:00:00+02');
 
 create table t2(
     time bigint not null,
