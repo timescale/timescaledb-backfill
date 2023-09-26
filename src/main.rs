@@ -335,9 +335,14 @@ async fn create_ctrl_c_handler() -> Result<UnboundedReceiver<PoolMessage>> {
     Ok(receiver)
 }
 
+fn connection_config(constr: &str) -> Result<Config> {
+    let mut config = Config::from_str(constr)?;
+    Ok(config.application_name("timescaledb-backfill").to_owned())
+}
+
 async fn stage(config: &StageConfig) -> Result<StageResult> {
-    let source_config = Config::from_str(&config.source)?;
-    let target_config = Config::from_str(&config.target)?;
+    let source_config = connection_config(&config.source)?;
+    let target_config = connection_config(&config.target)?;
 
     let mut source = Source::connect(&source_config).await?;
     let mut target = Target::connect(&target_config).await?;
@@ -360,8 +365,8 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
 }
 
 async fn copy(config: &CopyConfig) -> Result<CopyResult> {
-    let source_config = Config::from_str(&config.source)?;
-    let target_config = Config::from_str(&config.target)?;
+    let source_config = connection_config(&config.source)?;
+    let target_config = connection_config(&config.target)?;
 
     // Enclose DB clients in a new block to ensure they go out of scope
     // as soon as possible. This helps to drop the database connections
@@ -403,8 +408,8 @@ async fn copy(config: &CopyConfig) -> Result<CopyResult> {
 }
 
 async fn verify(config: &VerifyConfig) -> Result<VerifyResult> {
-    let source_config = Config::from_str(&config.source)?;
-    let target_config = Config::from_str(&config.target)?;
+    let source_config = connection_config(&config.source)?;
+    let target_config = connection_config(&config.target)?;
 
     // Enclose DB clients in a new block to ensure they go out of scope
     // as soon as possible. This helps to drop the database connections
@@ -446,14 +451,14 @@ async fn verify(config: &VerifyConfig) -> Result<VerifyResult> {
 }
 
 async fn clean(config: &CleanConfig) -> Result<CleanResult> {
-    let target_config = Config::from_str(&config.target)?;
+    let target_config = connection_config(&config.target)?;
     task::clean(&target_config).await?;
     Ok(CleanResult {})
 }
 
 async fn refresh_caggs(config: &RefreshCaggsConfig) -> Result<RefreshCaggsResult> {
-    let source = Source::connect(&Config::from_str(&config.source)?).await?;
-    let target = Target::connect(&Config::from_str(&config.target)?).await?;
+    let source = Source::connect(&connection_config(&config.source)?).await?;
+    let target = Target::connect(&connection_config(&config.target)?).await?;
     let refreshed_caggs = caggs::refresh_caggs(
         &source,
         &target,
@@ -505,7 +510,7 @@ async fn target_from_command(command: &Command) -> Result<Target> {
         Command::RefreshCaggs(args) => &args.target,
         Command::Clean(args) => &args.target,
     };
-    let target_config = Config::from_str(raw_target_config)?;
+    let target_config = connection_config(raw_target_config)?;
     Target::connect(&target_config).await
 }
 
@@ -517,7 +522,7 @@ async fn source_from_command(command: &Command) -> Result<Option<Source>> {
         Command::RefreshCaggs(args) => &args.source,
         Command::Clean(_) => return Ok(None),
     };
-    let source_config = Config::from_str(raw_source_config)?;
+    let source_config = connection_config(raw_source_config)?;
     Ok(Some(Source::connect(&source_config).await?))
 }
 
