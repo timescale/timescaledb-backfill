@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
-/// Refresh the continuous aggregates in `target` based on the watermark values
+///  Refresh the continuous aggregates in `target` based on the watermark values
 /// in `source`.
 pub(crate) async fn refresh_caggs(
     source: &Source,

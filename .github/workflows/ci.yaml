@@ -74,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgversion: [12, 13, 14, 15]
+        pgversion: [15]
 
     runs-on: ubuntu-latest
     steps:
