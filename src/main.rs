@@ -12,6 +12,7 @@ use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
+use std::clone::Clone;
 use std::fmt::{self, Display, Formatter};
 use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
@@ -56,6 +57,87 @@ impl Display for PanicError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "caught panic: {}", self.reason)
     }
+}
+
+#[derive(Args, Debug)]
+pub struct All {
+    /// Connection string to the source database.
+    #[arg(long)]
+    source: String,
+
+    /// Connection string to the target database.
+    #[arg(long)]
+    target: String,
+
+    /// The completion point to copy chunk data until. The backfill process
+    /// will copy all chunk rows where the time dimension column is less than
+    /// or equal to this value.
+    ///
+    /// It accepts any representation of a valid time dimension value:
+    ///
+    /// - Timestamp: TIMESTAMP, TIMESTAMPTZ
+    /// - Date: DATE
+    /// - Integer: SMALLINT, INT, BIGINT
+    ///
+    /// The value will be parsed to the correct type as defined by the time
+    /// dimension column type.
+    ///
+    /// A combination of `--until` and `--filter` can be used to specify
+    /// different completion points for different tables. For example, in the
+    /// case with hypertables that use auto-increment integers for their time
+    /// dimensions, or a combination of hypertables with some using timestamp
+    /// and others using integer.
+    ///
+    /// timescaledb-backfill stage --filter epoch_schema.* --until 1692696465
+    /// timescaledb-backfill stage --filter public.table_with_auto_increment_integer --until 424242
+    /// timescaledb-backfill stage --filter public.table_with_timestamptz --until '2016-02-01T18:20:00'
+    #[arg(short, long, verbatim_doc_comment)]
+    until: String,
+
+    /// The starting point to copy chunk data from. The backfill process
+    /// will copy all chunk rows where the time dimension column is greater
+    /// than or equal to this value.
+    ///
+    /// If not specify, the data will be copy from the beggining of time up
+    /// to the completion point defined by the mandatory `--until` flag.
+    ///
+    /// It accepts any representation of a valid time dimension value:
+    ///
+    /// - Timestamp: TIMESTAMP, TIMESTAMPTZ
+    /// - Date: DATE
+    /// - Integer: SMALLINT, INT, BIGINT
+    ///
+    /// The value will be parsed to the correct type as defined by the time
+    /// dimension column type.
+    ///
+    /// Refer to the `--until` flag documentation if you require different
+    /// values or value type for specific tables or schemas.
+    #[arg(short = 'F', long)]
+    from: Option<String>,
+
+    /// Posix regular expression used to match `schema.table` for hypertables
+    /// and `schema.view` for continuous aggregates.
+    #[arg(short, long, verbatim_doc_comment)]
+    filter: Option<String>,
+
+    /// If filter is provided, automatically include continuous aggregates and
+    /// hypertables which depend upon hypertables and continuous aggregates
+    /// that match the filter.
+    #[arg(short = 'U', long = "cascade-up", verbatim_doc_comment)]
+    cascade_up: bool,
+
+    /// If filter is provided, automatically include continuous aggregates and
+    /// hypertables on which continuous aggregates matching the filter depend.
+    #[arg(short = 'D', long = "cascade-down", verbatim_doc_comment)]
+    cascade_down: bool,
+
+    /// A postgres snapshot exported from source to use when copying.
+    #[arg(short, long)]
+    snapshot: Option<String>,
+
+    /// Parallelism for copy and verification.
+    #[arg(short, long, default_value_t = 8)]
+    parallelism: u8,
 }
 
 #[derive(Args, Debug)]
@@ -199,6 +281,15 @@ pub struct CleanConfig {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Executes all the commands in order.
+    ///
+    /// 1. Stage.
+    /// 2. Copy.
+    /// 3. Refresh Caggs.
+    /// 3. Verify.
+    /// 4. Clean.
+    #[command(verbatim_doc_comment)]
+    All(All),
     /// Creates copy tasks for hypertable and continuous aggregates chunks.
     ///
     /// The tasks are based on the specified completion point (--until). An
@@ -238,6 +329,7 @@ pub enum Command {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Command::All(_) => write!(f, "all"),
             Command::Stage(_) => write!(f, "stage"),
             Command::Copy(_) => write!(f, "copy"),
             Command::Verify(_) => write!(f, "verify"),
@@ -267,8 +359,8 @@ pub struct CliArgs {
     disable_telemetry: bool,
 }
 
-#[derive(Debug)]
 enum CommandResult {
+    All(AllResult),
     Stage(StageResult),
     Copy(CopyResult),
     Verify(VerifyResult),
@@ -277,17 +369,27 @@ enum CommandResult {
 }
 
 #[derive(Debug)]
+struct AllResult {
+    staged_tasks: usize,
+    copy_tasks_finished: usize,
+    copy_tasks_total_bytes: usize,
+    verify_tasks_finished: usize,
+    verify_tasks_failures: usize,
+    refreshed_caggs: usize,
+}
+
+#[derive(Debug, Clone)]
 struct StageResult {
     staged_tasks: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CopyResult {
     tasks_finished: usize,
     tasks_total_bytes: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VerifyResult {
     tasks_finished: usize,
     tasks_failures: usize,
@@ -296,7 +398,7 @@ struct VerifyResult {
 #[derive(Debug)]
 struct CleanResult {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RefreshCaggsResult {
     refreshed_caggs: usize,
 }
@@ -356,6 +458,7 @@ async fn main() -> Result<()> {
 
 async fn run(args: &CliArgs) -> Result<CommandResult> {
     match args.command {
+        Command::All(ref args) => all(args).await.map(CommandResult::All),
         Command::Stage(ref args) => stage(args).await.map(CommandResult::Stage),
         Command::Copy(ref args) => copy(args).await.map(CommandResult::Copy),
         Command::Verify(ref args) => verify(args).await.map(CommandResult::Verify),
@@ -400,6 +503,81 @@ async fn create_ctrl_c_handler() -> Result<UnboundedReceiver<PoolMessage>> {
 fn connection_config(constr: &str) -> Result<Config> {
     let mut config = Config::from_str(constr)?;
     Ok(config.application_name("timescaledb-backfill").to_owned())
+}
+
+async fn all(config: &All) -> Result<AllResult> {
+    let start = Instant::now();
+    let stage_result = stage(&StageConfig {
+        source: config.source.clone(),
+        target: config.target.clone(),
+        until: config.until.clone(),
+        from: config.from.clone(),
+        filter: config.filter.clone(),
+        cascade_up: config.cascade_up,
+        cascade_down: config.cascade_down,
+        snapshot: config.snapshot.clone(),
+    })
+    .await?;
+    let command_duration = start.elapsed();
+    let _ = print_summary(
+        &CommandResult::Stage(stage_result.clone()),
+        command_duration,
+    );
+
+    let start = Instant::now();
+    let copy_result = copy(&CopyConfig {
+        source: config.source.clone(),
+        target: config.target.clone(),
+        parallelism: config.parallelism,
+    })
+    .await?;
+    let command_duration = start.elapsed();
+    let _ = print_summary(&CommandResult::Copy(copy_result.clone()), command_duration);
+    PROCESSED_COUNT.store(0, Relaxed);
+
+    let start = Instant::now();
+    let refresh_caggs_result = refresh_caggs(&RefreshCaggsConfig {
+        source: config.source.clone(),
+        target: config.target.clone(),
+        filter: config.filter.clone(),
+        cascade_up: config.cascade_up,
+        cascade_down: config.cascade_down,
+    })
+    .await?;
+    let command_duration = start.elapsed();
+    let _ = print_summary(
+        &CommandResult::RefreshCaggs(refresh_caggs_result.clone()),
+        command_duration,
+    );
+
+    let start = Instant::now();
+    let verify_result = verify(&VerifyConfig {
+        source: config.source.clone(),
+        target: config.target.clone(),
+        parallelism: config.parallelism,
+    })
+    .await?;
+    let command_duration = start.elapsed();
+    let _ = print_summary(
+        &CommandResult::Verify(verify_result.clone()),
+        command_duration,
+    );
+
+    let clean_result = clean(&CleanConfig {
+        target: config.target.clone(),
+    })
+    .await?;
+
+    let _ = print_summary(&CommandResult::Clean(clean_result), Duration::default());
+
+    Ok(AllResult {
+        staged_tasks: stage_result.staged_tasks,
+        copy_tasks_finished: copy_result.tasks_finished,
+        copy_tasks_total_bytes: copy_result.tasks_total_bytes,
+        verify_tasks_finished: verify_result.tasks_finished,
+        verify_tasks_failures: verify_result.tasks_failures,
+        refreshed_caggs: refresh_caggs_result.refreshed_caggs,
+    })
 }
 
 async fn stage(config: &StageConfig) -> Result<StageResult> {
@@ -535,6 +713,12 @@ async fn refresh_caggs(config: &RefreshCaggsConfig) -> Result<RefreshCaggsResult
 
 fn print_summary(command_result: &CommandResult, duration: Duration) -> Result<()> {
     match command_result {
+        CommandResult::All(_) => TERM
+            .write_line(&format!(
+                "All commands executed in {}.",
+                duration.human_duration(),
+            ))
+            .map_err(anyhow::Error::from),
         CommandResult::Stage(result) => TERM
             .write_line(&format!(
                 "Staged {} chunks to copy.\nExecute the 'copy' command to migrate the data.",
@@ -567,6 +751,7 @@ fn print_summary(command_result: &CommandResult, duration: Duration) -> Result<(
 
 async fn target_from_command(command: &Command) -> Result<Target> {
     let raw_target_config = match command {
+        Command::All(args) => &args.target,
         Command::Stage(args) => &args.target,
         Command::Verify(args) => &args.target,
         Command::Copy(args) => &args.target,
@@ -579,6 +764,7 @@ async fn target_from_command(command: &Command) -> Result<Target> {
 
 async fn source_from_command(command: &Command) -> Result<Option<Source>> {
     let raw_source_config = match command {
+        Command::All(args) => &args.source,
         Command::Stage(args) => &args.source,
         Command::Copy(args) => &args.source,
         Command::Verify(args) => &args.source,
@@ -609,6 +795,11 @@ async fn report_telemetry(
 
     telemetry = match command_result {
         Ok(command_result) => match command_result {
+            CommandResult::All(result) => telemetry
+                .with_staged_tasks(result.staged_tasks)
+                .with_copied_tasks(result.copy_tasks_finished, result.copy_tasks_total_bytes)
+                .with_refreshed_caggs(result.refreshed_caggs)
+                .with_verified_tasks(result.verify_tasks_finished, result.verify_tasks_failures),
             CommandResult::Copy(result) => {
                 telemetry.with_copied_tasks(result.tasks_finished, result.tasks_total_bytes)
             }

@@ -2457,8 +2457,220 @@ fn assert_refresh_caggs_telemetry(refreshed_caggs: usize) -> Box<dyn Fn(JsonAsse
         json_assert.has_null("copy_tasks_total_bytes");
         json_assert.has_null("staged_tasks");
         json_assert.has("refreshed_caggs", refreshed_caggs);
+        json_assert.has_null("verify_tasks_finished");
+        json_assert.has_null("verify_tasks_failures");
         json_assert.has_null("error_reason");
         json_assert.has_string("source_db_pg_version");
         json_assert.has_string("source_db_tsdb_version");
     })
+}
+
+fn assert_all_telemetry(
+    staged_tasks: usize,
+    copy_tasks_finished: usize,
+    refreshed_caggs: usize,
+    verify_tasks_finished: usize,
+    verify_tasks_failures: usize,
+) -> Box<dyn Fn(JsonAssert)> {
+    Box::new(move |json_assert: JsonAssert| {
+        json_assert.has_null("session_id");
+        json_assert.has_null("session_created_at");
+        json_assert.has(
+            "timescaledb_backfill_version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+        json_assert.has("debug_mode", true);
+        json_assert.has("success", true);
+        json_assert.has("command", "all");
+        json_assert.has_number("command_duration_secs");
+        json_assert.has("copy_tasks_finished", copy_tasks_finished);
+        json_assert.has_number("copy_tasks_total_bytes");
+        json_assert.has("staged_tasks", staged_tasks);
+        json_assert.has("refreshed_caggs", refreshed_caggs);
+        json_assert.has_null("error_reason");
+        json_assert.has_string("source_db_pg_version");
+        json_assert.has_string("source_db_tsdb_version");
+        json_assert.has("verify_tasks_finished", verify_tasks_finished);
+        json_assert.has("verify_tasks_failures", verify_tasks_failures);
+    })
+}
+
+#[test]
+fn all_command() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+    let docker = testcontainers::clients::Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    psql(
+        &source_container,
+        PsqlInput::File(PathBuf::from("tests/source_schema.sql")),
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    let is_source_ts_lt_2_12 = is_ts_version_lt_2_12(&source_container.connection_string())?;
+
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs\"_T1",
+        CAGG_T1_EXPECTED.initial_watermak,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_2",
+        get_cagg_t1_2_expected(is_source_ts_lt_2_12).initial_watermak,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_3",
+        get_cagg_t1_3_expected(is_source_ts_lt_2_12).initial_watermak,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t2",
+        CAGG_T2_EXPECTED.initial_watermak,
+    );
+
+    let is_target_ts_lt_2_12 = is_ts_version_lt_2_12(&source_container.connection_string())?;
+
+    target_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs\"_T1",
+        CAGG_T1_EXPECTED.initial_watermak,
+    );
+    target_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_2",
+        get_cagg_t1_2_expected(is_target_ts_lt_2_12).initial_watermak,
+    );
+    target_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_3",
+        get_cagg_t1_3_expected(is_target_ts_lt_2_12).initial_watermak,
+    );
+    target_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t2",
+        CAGG_T2_EXPECTED.initial_watermak,
+    );
+
+    // Add more date into source and refresh the caggs on source to have
+    // different watermarks.
+    let insert: &str = r"
+    insert into t1 values ('2024-01-06 19:27:30.024001+02', 1, 1);
+    insert into t2 values (30, 1, 1);";
+
+    psql(&source_container, PsqlInput::Sql(insert))?;
+
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r#"call refresh_continuous_aggregate('"caggs""_T1"', null, '2024-10-31 02:00:00+02')"#,
+        ),
+    )?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            "call refresh_continuous_aggregate('caggs_t1_2', null, '2024-10-31 02:00:00+02')",
+        ),
+    )?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            "call refresh_continuous_aggregate('caggs_t1_3', null, '2024-10-31 02:00:00+02')",
+        ),
+    )?;
+    psql(
+        &source_container,
+        PsqlInput::Sql("call refresh_continuous_aggregate('caggs_t2', 0, 40)"),
+    )?;
+
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs\"_T1",
+        CAGG_T1_EXPECTED.refreshed_watermark,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_2",
+        get_cagg_t1_2_expected(is_source_ts_lt_2_12).refreshed_watermark,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t1_3",
+        get_cagg_t1_3_expected(is_source_ts_lt_2_12).refreshed_watermark,
+    );
+    source_dbassert.has_cagg_with_watermark(
+        "public",
+        "caggs_t2",
+        CAGG_T2_EXPECTED.refreshed_watermark,
+    );
+
+    let config = TestConfigAll::new(&source_container, &target_container, "2024-01-08 00:00:00");
+
+    let output = run_backfill(config).unwrap();
+
+    output.assert().success().stdout(
+        contains("Staged 8 chunks to copy.\nExecute the \'copy\' command to migrate the data.")
+            .and(contains("Copied 440B from 8 chunks in"))
+            .and(contains(CAGG_T1_EXPECTED.stdout))
+            .and(contains(
+                get_cagg_t1_2_expected(is_target_ts_lt_2_12).stdout,
+            ))
+            .and(contains(
+                get_cagg_t1_3_expected(is_target_ts_lt_2_12).stdout,
+            ))
+            .and(contains("Refreshed continuous aggregates"))
+            .and(contains("Verifying 8 chunks with 8 workers"))
+            .and(contains("Chunk verification failed").not())
+            .and(contains("Verifed 8 chunks in"))
+            .and(contains(
+                "Removed backfill administrative schema from target database",
+            ))
+            .and(contains("All commands executed in")),
+    );
+
+    target_dbassert
+        .has_cagg_with_watermark("public", "caggs\"_T1", CAGG_T1_EXPECTED.refreshed_watermark)
+        .has_cagg_with_watermark(
+            "public",
+            "caggs_t1_2",
+            get_cagg_t1_2_expected(is_target_ts_lt_2_12).refreshed_watermark,
+        )
+        .has_cagg_with_watermark(
+            "public",
+            "caggs_t1_3",
+            get_cagg_t1_3_expected(is_target_ts_lt_2_12).refreshed_watermark,
+        )
+        .has_telemetry(vec![assert_all_telemetry(8, 8, 4, 8, 0)])
+        // T2 has an integer time dimension so it was skipped.
+        .has_table_count("public", "t2", 0)
+        .has_chunk_count("public", "t2", 1)
+        .has_cagg_with_watermark("public", "caggs_t2", CAGG_T2_EXPECTED.initial_watermak)
+        .not_has_schema("__backfill");
+
+    // T2 has an integer time dimensions so it was skipped.
+    source_dbassert
+        .has_table_count("public", "t2", 2)
+        .has_chunk_count("public", "t2", 2);
+
+    for mut dbassert in [source_dbassert, target_dbassert] {
+        dbassert
+            .has_table_count("public", "t1", 2)
+            .has_cagg_mt_chunk_count("public", "caggs\"_T1", 2)
+            .has_cagg_mt_chunk_count("public", "caggs_t1_2", 2)
+            .has_cagg_mt_chunk_count("public", "caggs_t1_3", 2)
+            .has_cagg_mt_chunk_count("public", "caggs_t2", 1);
+    }
+
+    Ok(())
 }

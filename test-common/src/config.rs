@@ -8,6 +8,98 @@ pub trait TestConfig {
 }
 
 #[derive(Default, Clone)]
+pub struct TestConfigAll {
+    source: TestConnectionString,
+    target: TestConnectionString,
+    until: String,
+    filter: Option<String>,
+    cascade_up: Option<bool>,
+    cascade_down: Option<bool>,
+    parallelism: u16,
+}
+
+impl TestConfigAll {
+    pub fn new<S: HasConnectionString, T: HasConnectionString>(
+        source: &'_ S,
+        target: &'_ T,
+        until: &str,
+    ) -> Self {
+        Self {
+            source: source.connection_string(),
+            target: target.connection_string(),
+            until: until.to_string(),
+            filter: None,
+            cascade_up: None,
+            cascade_down: None,
+            parallelism: 8,
+        }
+    }
+
+    pub fn with_filter(&mut self, filter: &str) -> Self {
+        Self {
+            filter: Some(filter.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_up(&mut self) -> Self {
+        Self {
+            cascade_up: Some(true),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_cascading_down(&mut self) -> Self {
+        Self {
+            cascade_down: Some(true),
+            ..self.clone()
+        }
+    }
+
+    pub fn with_parallel(&self, parallelism: u16) -> Self {
+        Self {
+            parallelism,
+            ..self.clone()
+        }
+    }
+}
+
+impl TestConfig for TestConfigAll {
+    fn args(&self) -> Vec<OsString> {
+        let mut args = vec![
+            OsString::from("--source"),
+            OsString::from(self.source.as_str()),
+            OsString::from("--target"),
+            OsString::from(self.target.as_str()),
+            OsString::from("--until"),
+            OsString::from(&self.until),
+            OsString::from("--parallelism"),
+            OsString::from(self.parallelism.to_string()),
+        ];
+
+        if let Some(filter) = self.filter.as_ref() {
+            args.extend_from_slice(&[OsString::from("--filter"), OsString::from(filter)]);
+            if self.cascade_up.is_some_and(|b| b) {
+                args.extend_from_slice(&[OsString::from("--cascade-up")]);
+            }
+            if self.cascade_down.is_some_and(|b| b) {
+                args.extend_from_slice(&[OsString::from("--cascade-down")]);
+            }
+        }
+
+        args
+    }
+
+    fn action(&self) -> &str {
+        "all"
+    }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
+
+#[derive(Default, Clone)]
 pub struct TestConfigClean {
     target: TestConnectionString,
 }

@@ -1,8 +1,6 @@
-use crate::{
-    connect::{Source, Target},
-    sql::quote_table_name,
-};
-use anyhow::{anyhow, Result};
+use crate::connect::{Source, Target};
+use crate::sql::quote_table_name;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{fmt::Debug, sync::OnceLock};
@@ -15,19 +13,18 @@ static FUNCTIONS_SCHEMA: &str = "_timescaledb_functions";
 static INTERNAL_SCHEMA: &str = "_timescaledb_internal";
 
 pub async fn initialize_source_proc_schema(source: &mut Source) -> Result<()> {
-    let tx = source.transaction().await?;
-    let schema = fetch_proc_schema(&tx).await?;
-    SOURCE_PROC_SCHEMA
-        .set(schema)
-        .map_err(|e| anyhow!("source proc schema already set to {}", e))?;
+    let schema = fetch_proc_schema(&source.client).await?;
+    // When running the `all` command the variable might already be set. In
+    // that case set will return Err(already_set_value) which we can discard.
+    let _ = SOURCE_PROC_SCHEMA.set(schema);
     Ok(())
 }
 
 pub async fn initialize_target_proc_schema(target: &Target) -> Result<()> {
     let schema = fetch_proc_schema(&target.client).await?;
-    TARGET_PROC_SCHEMA
-        .set(schema)
-        .map_err(|e| anyhow!("target proc schema already set to {}", e))?;
+    // When running the `all` command the variable might already be set. In
+    // that case set will return Err(already_set_value) which we can discard.
+    let _ = TARGET_PROC_SCHEMA.set(schema);
     Ok(())
 }
 
