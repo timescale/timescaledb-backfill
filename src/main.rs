@@ -70,7 +70,7 @@ pub struct StageConfig {
 
     /// The completion point to copy chunk data until. The backfill process
     /// will copy all chunk rows where the time dimension column is less than
-    /// or equal to this value.
+    /// this value.
     ///
     /// It accepts any representation of a valid time dimension value:
     ///
@@ -92,6 +92,27 @@ pub struct StageConfig {
     /// timescaledb-backfill stage --filter public.table_with_timestamptz --until '2016-02-01T18:20:00'
     #[arg(short, long)]
     until: String,
+
+    /// The starting point to copy chunk data from. The backfill process
+    /// will copy all chunk rows where the time dimension column is greater
+    /// than or equal to this value.
+    ///
+    /// If not specify, the data will be copy from the beggining of time up
+    /// to the completion point defined by the mandatory `--until` flag.
+    ///
+    /// It accepts any representation of a valid time dimension value:
+    ///
+    /// - Timestamp: TIMESTAMP, TIMESTAMPTZ
+    /// - Date: DATE
+    /// - Integer: SMALLINT, INT, BIGINT
+    ///
+    /// The value will be parsed to the correct type as defined by the time
+    /// dimension column type.
+    ///
+    /// Refer to the `--until` flag documentation if you require different
+    /// values or value type for specific tables or schemas.
+    #[arg(short = 'F', long)]
+    from: Option<String>,
 
     /// Posix regular expression used to match `schema.table` for hypertables
     /// and `schema.view` for continuous aggregates
@@ -357,6 +378,7 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
         config.cascade_up,
         config.cascade_down,
         &config.until,
+        config.from.as_ref(),
         config.snapshot.as_ref(),
     )
     .await?;

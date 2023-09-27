@@ -147,6 +147,7 @@ pub struct TestConfigStage {
     source: TestConnectionString,
     target: TestConnectionString,
     until: String,
+    from: Option<String>,
     filter: Option<String>,
     cascade_up: Option<bool>,
     cascade_down: Option<bool>,
@@ -162,9 +163,17 @@ impl TestConfigStage {
             source: source.connection_string(),
             target: target.connection_string(),
             until: until.to_string(),
+            from: None,
             filter: None,
             cascade_up: None,
             cascade_down: None,
+        }
+    }
+
+    pub fn with_starting_time(&mut self, from: &str) -> Self {
+        Self {
+            from: Some(from.to_owned()),
+            ..self.clone()
         }
     }
 
@@ -209,6 +218,10 @@ impl TestConfig for TestConfigStage {
             if self.cascade_down.is_some_and(|b| b) {
                 args.extend_from_slice(&[OsString::from("--cascade-down")]);
             }
+        }
+
+        if let Some(from) = self.from.as_ref() {
+            args.extend_from_slice(&[OsString::from("--from"), OsString::from(from)])
         }
 
         args
