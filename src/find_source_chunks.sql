@@ -1,8 +1,9 @@
 /*
 $1 is a case insensitive posix regular expression filtering on hypertable schema.table
 $2 is a string that represents the upper bound on "time" dimension values
-$3 is a bool controlling whether or not filter matches cascade up the cagg hierarchy
-$4 is a bool controlling whether or not filter matches cascade down the cagg hierarchy
+$3 is a string that represents the lower bound on "time" dimension values
+$4 is a bool controlling whether or not filter matches cascade up the cagg hierarchy
+$5 is a bool controlling whether or not filter matches cascade down the cagg hierarchy
 
 TimescaleDB 2.12 changed the schema where internal functions are installed from
 _timescaledb_internal to _timescaledb_functions, to support both we add the
@@ -37,7 +38,7 @@ with recursive f as
     , c.mat_hypertable_id
     from f
     inner join _timescaledb_catalog.continuous_agg c on (f.id = c.raw_hypertable_id)
-    where $3::bool -- cascade up?
+    where $4::bool -- cascade up?
     union all
     select
       h.id
@@ -59,7 +60,7 @@ with recursive f as
     , c.raw_hypertable_id
     from f
     inner join _timescaledb_catalog.continuous_agg c on (f.id = c.mat_hypertable_id)
-    where $4::bool -- cascade down ?
+    where $5::bool -- cascade down ?
     union all
     select
       h.id
@@ -114,9 +115,20 @@ select
     inner join _timescaledb_catalog.dimension_slice ds2 on (cc2.chunk_id = c.id and cc2.dimension_slice_id = ds2.id)
     inner join _timescaledb_catalog.dimension d2 on (ds2.dimension_id = d2.id and d2.hypertable_id = h.id)
   )::text as dimensions
-, case when ds.range_start <= d.filter_value and d.filter_value < ds.range_end
-    then format('%I <= %s', d.column_name, d.filter_literal)
-  end as filter
+, nullif(
+    concat_ws
+    ( ' and '
+    , case when ds.range_start < d.upper_value and d.upper_value < ds.range_end
+          then format('%I < %s', d.column_name, d.upper_literal)
+          else null
+      end
+    , case when d.lower_value is not null and ds.range_start <= d.lower_value and d.lower_value < ds.range_end
+          then format('%I >= %s', d.column_name, d.lower_literal)
+          else null
+      end
+    ),
+    ''
+  ) as filter
 from h
 inner join lateral
 (
@@ -133,7 +145,7 @@ inner join lateral
             @extschema@.time_to_internal($2::text::date)
         when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $2::text ~ '^[0-9]+$' then
             @extschema@.time_to_internal(cast($2::text as bigint))
-      end as filter_value
+      end as upper_value
     , case
         when d.column_type = 'timestamp'::regtype then
             format('%L', $2::text::timestamp)
@@ -143,14 +155,34 @@ inner join lateral
             format('%L', $2::text::date)
         when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $2::text ~ '^[0-9]+$' then
             format('%L', cast($2::text as bigint))
-      end as filter_literal
+      end as upper_literal
+    , case
+        when d.column_type = 'timestamp'::regtype then
+            @extschema@.time_to_internal($3::text::timestamp)
+        when d.column_type = 'timestamptz'::regtype then
+            @extschema@.time_to_internal($3::text::timestamptz)
+        when d.column_type = 'date'::regtype then
+            @extschema@.time_to_internal($3::text::date)
+        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $3::text ~ '^[0-9]+$' then
+            @extschema@.time_to_internal(cast($3::text as bigint))
+      end as lower_value
+    , case
+        when d.column_type = 'timestamp'::regtype then
+            format('%L', $3::text::timestamp)
+        when d.column_type = 'timestamptz'::regtype then
+            format('%L', $3::text::timestamptz)
+        when d.column_type = 'date'::regtype then
+            format('%L', $3::text::date)
+        when d.column_type in ('bigint'::regtype, 'int'::regtype, 'smallint'::regtype) and $3::text ~ '^[0-9]+$' then
+            format('%L', cast($3::text as bigint))
+      end as lower_literal
     from _timescaledb_catalog.dimension d
     where d.hypertable_id = h.id
     order by d.id
     limit 1
 ) d on (true)
 inner join _timescaledb_catalog.dimension_slice ds
-on (d.id = ds.dimension_id and ds.range_start <= d.filter_value)
+on (d.id = ds.dimension_id and ds.range_start < d.upper_value and (d.lower_value is null or d.lower_value <= ds.range_end))
 inner join _timescaledb_catalog.chunk_constraint cc on (ds.id = cc.dimension_slice_id)
 inner join _timescaledb_catalog.chunk c on (cc.chunk_id = c.id and h.id = c.hypertable_id)
 where c.dropped = false

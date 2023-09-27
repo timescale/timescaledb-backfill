@@ -159,6 +159,7 @@ where
 {
     setup_sql: Vec<PsqlInput<S>>,
     completion_time: &'a str,
+    starting_time: Option<&'a str>,
     filter: Option<Filter<'a>>,
     post_skeleton_source_sql: Vec<PsqlInput<S>>,
     post_skeleton_target_sql: Vec<PsqlInput<S>>,
@@ -224,6 +225,10 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         };
     }
 
+    if let Some(from) = test_case.starting_time {
+        stage_config = stage_config.with_starting_time(from);
+    }
+
     run_backfill(stage_config).unwrap().assert().success();
 
     run_backfill(TestConfigCopy::new(&source_container, &target_container))
@@ -258,6 +263,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
             ],
             completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -266,6 +272,34 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5);
                 }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
+            }),
+            filter: None,
+        }
+    ),
+    (
+        copy_data_from_chunks_with_from_flag,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_JUNE),
+            ],
+            completion_time: "2023-06-30T23:30:01Z",
+            starting_time: Some("2023-06-01T00:00:00Z"),
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_MAY),],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 720)
+                    .has_chunk_count("public", "metrics", 5);
+                target
+                    .has_table_count("public", "metrics", 1464)
+                    .has_chunk_count("public", "metrics", 10);
                 let tasks = 5;
                 target.has_telemetry(vec![
                     assert_stage_telemetry(tasks),
@@ -286,6 +320,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
             ],
             completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -320,6 +355,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_OTHER_HYPERTABLE_DATA_FOR_MAY),
             ],
             completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -354,6 +390,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -384,6 +421,7 @@ generate_tests!(
             // Completion time is just inside of a chunk boundary, so if we implement this incorrectly,
             // the chunk will end up with rows from the source with time > completion_time.
             completion_time: "2023-05-26T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![
                 // Simulate beginning dual-write at 2023-05-20T00:00:00Z
@@ -423,6 +461,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -455,6 +494,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_JUNE)],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -483,6 +523,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![PsqlInput::Sql(COMPRESS_ONE_CHUNK),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -512,6 +553,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "604800000",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -542,6 +584,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "604800000",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -571,6 +614,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ALL_CHUNKS),
             ],
             completion_time: "2023-05-05T23:30:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -601,6 +645,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
             ],
             completion_time: "2023-05-05T23:30:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![PsqlInput::Sql(COMPRESS_ALL_CHUNKS),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -632,6 +677,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ALL_CHUNKS),
             ],
             completion_time: "2023-05-05T23:30:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![
                 // this simulates a dual-write which has produced data in compressed chunks
@@ -670,6 +716,7 @@ generate_tests!(
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
                 PsqlInput::Sql(INSERT_DATA_FOR_MAY),
@@ -702,6 +749,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_MAY),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -731,6 +779,7 @@ generate_tests!(
                 PsqlInput::Sql(COMPRESS_ONE_CHUNK),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![PsqlInput::Sql(DECOMPRESS_ONE_CHUNK),],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
@@ -768,6 +817,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -800,6 +850,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -833,6 +884,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -865,6 +917,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -898,6 +951,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -932,6 +986,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -968,6 +1023,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1002,6 +1058,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1035,6 +1092,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1070,6 +1128,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1104,6 +1163,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1141,6 +1201,7 @@ generate_tests!(
                 PsqlInput::Sql(CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE),
             ],
             completion_time: "2023-07-01T00:00:00",
+            starting_time: None,
             post_skeleton_source_sql: vec![],
             post_skeleton_target_sql: vec![],
             asserts: Box::new(|_: &mut DbAssert, target: &mut DbAssert| {
@@ -1638,7 +1699,7 @@ fn stage_and_copy_a_single_chunk<C: HasConnectionString>(
     run_backfill(TestConfigStage::new(
         source_container,
         target_container,
-        "2016-01-02T00:00:00Z",
+        "2016-01-02T00:00:01Z",
     ))
     .unwrap()
     .assert()

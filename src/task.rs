@@ -157,6 +157,7 @@ async fn check_until(source: &mut Source, until: &String) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn load_queue(
     source: &mut Source,
     target: &mut Target,
@@ -164,6 +165,7 @@ pub async fn load_queue(
     cascade_up: bool,
     cascade_down: bool,
     until: &String,
+    from: Option<&String>,
     snapshot: Option<&String>,
 ) -> Result<usize> {
     if let Some(filter) = filter {
@@ -179,7 +181,10 @@ pub async fn load_queue(
     let source_tx = source.transaction().await?;
 
     let rows = match source_tx
-        .query(&query, &[&filter, &until, &cascade_up, &cascade_down])
+        .query(
+            &query,
+            &[&filter, &until, &from, &cascade_up, &cascade_down],
+        )
         .await
     {
         Ok(rows) => rows,
