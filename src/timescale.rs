@@ -11,6 +11,8 @@ use tokio_postgres::GenericClient;
 static SOURCE_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
 static TARGET_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
 static EXTSCHEMA: &str = "@extschema@";
+static FUNCTIONS_SCHEMA: &str = "_timescaledb_functions";
+static INTERNAL_SCHEMA: &str = "_timescaledb_internal";
 
 pub async fn initialize_source_proc_schema(source: &mut Source) -> Result<()> {
     let tx = source.transaction().await?;
@@ -34,16 +36,21 @@ where
     T: GenericClient,
 {
     let query = r"
-    SELECT pronamespace::regnamespace::text
-    FROM pg_proc
-    WHERE
-        proname = 'create_chunk' AND
-        pronamespace::regnamespace::text IN ('_timescaledb_internal','_timescaledb_functions')
+    SELECT exists(
+        SELECT 1
+        FROM pg_proc
+        WHERE
+            proname = 'create_chunk' AND
+            pronamespace::regnamespace::text = $1
+    )
     ";
-    let row = client.query_one(query, &[]).await?;
+    let row = client.query_one(query, &[&FUNCTIONS_SCHEMA]).await?;
 
-    let schema: String = row.get(0);
-    Ok(schema)
+    if row.get(0) {
+        Ok(FUNCTIONS_SCHEMA.into())
+    } else {
+        Ok(INTERNAL_SCHEMA.into())
+    }
 }
 
 pub fn set_query_source_proc_schema(query: &str) -> String {
