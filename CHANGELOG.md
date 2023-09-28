@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/timescale/timescaledb-backfill/compare/v0.5.0...v0.6.0) (2023-09-28)
+
+
+### Features
+
+* set application_name on db connections ([6f8fbf4](https://github.com/timescale/timescaledb-backfill/commit/6f8fbf460b0a707f3ea71d49db02aed9ca8da9d8))
+
+
+### Bug Fixes
+
+* proc schema query support for function in multiple schemas ([a189271](https://github.com/timescale/timescaledb-backfill/commit/a1892711ae180a81b8096b2c20d22c324e8c0743))
+
+
+### Miscellaneous
+
+* test caggs refresh with 3 level hierarchy ([58f3e17](https://github.com/timescale/timescaledb-backfill/commit/58f3e173eabc18361c8cc7965d95f293818a26fc))
+
 ## [0.5.0](https://github.com/timescale/timescaledb-backfill/compare/v0.4.1...v0.5.0) (2023-09-25)
 
 
