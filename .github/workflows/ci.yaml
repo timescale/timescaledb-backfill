@@ -110,6 +110,7 @@ jobs:
         run: cargo test --workspace
         env:
           BF_TEST_PG_VERSION: ${{ matrix.pgversion }}
+          RUST_BACKTRACE: full
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.
   ci-result:

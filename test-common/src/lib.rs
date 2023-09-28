@@ -88,6 +88,7 @@ pub fn spawn_backfill(config: impl TestConfig) -> Result<Child> {
         .arg(config.action())
         .args(config.args())
         .envs(config.envs())
+        .env("RUST_BACKTRACE", "full")
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
