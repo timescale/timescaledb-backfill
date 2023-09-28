@@ -26,10 +26,12 @@ diffy = "0.3.0"
 futures-lite = { version = "1.13.0", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.28", default-features = false, features = ["sink"] }
 human-repr = "1.1.0"
+lazy_static = "1.4.0"
 multimap = "0.9.0"
 once_cell = "1.18.0"
 predicates = "3.0.4"
 rustls = { version = "0.21.7", features = ["dangerous_configuration", "tls12"], default-features = false }
+semver = "1.0.19"
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.107"
 serde_yaml = "0.9.25"

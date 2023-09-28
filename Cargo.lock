@@ -1346,6 +1346,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "semver"
+version = "1.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad977052201c6de01a8ef2aa3378c4bd23217a056337d1d6da40468d267a4fb0"
+
+[[package]]
 name = "serde"
 version = "1.0.188"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,12 +1670,14 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "human-repr",
+ "lazy_static",
  "multimap",
  "once_cell",
  "postgres",
  "predicates",
  "pretty_env_logger",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

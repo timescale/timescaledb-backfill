@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use assert_cmd::prelude::*;
-use std::process::{Child, Command, Output, Stdio};
-
 use log::debug;
+use postgres::{Config, NoTls};
 use std::fmt::{Display, Formatter};
+use std::process::{Child, Command, Output, Stdio};
+use std::str::FromStr;
 use testcontainers::core::WaitFor;
 use testcontainers::images::generic::GenericImage;
 
@@ -24,6 +25,7 @@ pub use crate::psql::*;
 pub use crate::test_connection_string::*;
 
 #[allow(dead_code)]
+#[derive(PartialEq, Eq)]
 pub enum PgVersion {
     PG11,
     PG12,
@@ -135,4 +137,14 @@ pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Res
         PsqlInput::Sql("select public.timescaledb_post_restore()"),
     )?;
     Ok(())
+}
+
+pub fn get_ts_version(dsn: &TestConnectionString) -> Result<String> {
+    let config = Config::from_str(dsn.connection_string().as_str())?;
+    let mut client = config.connect(NoTls)?;
+    let row = client.query_one(
+        "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'",
+        &[],
+    )?;
+    Ok(row.get(0))
 }
