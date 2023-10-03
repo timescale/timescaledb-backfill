@@ -5,7 +5,7 @@ use crate::task::TaskType;
 use crate::timescale::{initialize_source_proc_schema, initialize_target_proc_schema};
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use console::Term;
 use futures_lite::FutureExt;
 use human_repr::{HumanCount, HumanDuration};
@@ -58,13 +58,13 @@ impl Display for PanicError {
     }
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct StageConfig {
-    /// Connection string to the source database
+    /// Connection string to the source database.
     #[arg(long)]
     source: String,
 
-    /// Connection string to the target database
+    /// Connection string to the target database.
     #[arg(long)]
     target: String,
 
@@ -90,7 +90,7 @@ pub struct StageConfig {
     /// timescaledb-backfill stage --filter epoch_schema.* --until 1692696465
     /// timescaledb-backfill stage --filter public.table_with_auto_increment_integer --until 424242
     /// timescaledb-backfill stage --filter public.table_with_timestamptz --until '2016-02-01T18:20:00'
-    #[arg(short, long)]
+    #[arg(short, long, verbatim_doc_comment)]
     until: String,
 
     /// The starting point to copy chunk data from. The backfill process
@@ -111,97 +111,127 @@ pub struct StageConfig {
     ///
     /// Refer to the `--until` flag documentation if you require different
     /// values or value type for specific tables or schemas.
-    #[arg(short = 'F', long)]
+    #[arg(short = 'F', long, verbatim_doc_comment)]
     from: Option<String>,
 
     /// Posix regular expression used to match `schema.table` for hypertables
     /// and `schema.view` for continuous aggregates
-    #[arg(short, long)]
+    #[arg(short, long, verbatim_doc_comment)]
     filter: Option<String>,
 
-    /// If filter is provided, automatically include continuous aggregates and hypertables which
-    /// depend upon hypertables and continuous aggregates that match the filter
-    #[arg(short = 'U', long = "cascade-up")]
+    /// If filter is provided, automatically include continuous aggregates and
+    /// hypertables which depend upon hypertables and continuous aggregates
+    /// that match the filter
+    #[arg(short = 'U', long = "cascade-up", verbatim_doc_comment)]
     cascade_up: bool,
 
-    /// If filter is provided, automatically include continuous aggregates and hypertables on which
-    /// continuous aggregates matching the filter depend
-    #[arg(short = 'D', long = "cascade-down")]
+    /// If filter is provided, automatically include continuous aggregates and
+    /// hypertables on which continuous aggregates matching the filter depend.
+    #[arg(short = 'D', long = "cascade-down", verbatim_doc_comment)]
     cascade_down: bool,
 
-    /// A postgres snapshot exported from source to use when copying
+    /// A postgres snapshot exported from source to use when copying.
     #[arg(short, long)]
     snapshot: Option<String>,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct CopyConfig {
-    /// Connection string to the source database
+    /// Connection string to the source database.
     #[arg(long)]
     source: String,
 
-    /// Connection string to the target database
+    /// Connection string to the target database.
     #[arg(long)]
     target: String,
 
-    /// Parallelism for copy
+    /// Parallelism for copy.
     #[arg(short, long, default_value_t = 8)]
     parallelism: u8,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct VerifyConfig {
-    /// Connection string to the source database
+    /// Connection string to the source database.
     #[arg(long)]
     source: String,
 
-    /// Connection string to the target database
+    /// Connection string to the target database.
     #[arg(long)]
     target: String,
 
-    /// Parallelism for verification
+    /// Parallelism for verification.
     #[arg(short, long, default_value_t = 8)]
     parallelism: u8,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct RefreshCaggsConfig {
-    /// Connection string to the source database
+    /// Connection string to the source database.
     #[arg(long)]
     source: String,
 
-    /// Connection string to the target database
+    /// Connection string to the target database.
     #[arg(long)]
     target: String,
 
-    /// Posix regular expression used to match `schema.view`
+    /// Posix regular expression used to match `schema.view`.
     #[arg(short, long)]
     filter: Option<String>,
 
     /// If filter is provided, automatically include continuous aggregates
-    /// which depends upon continuous aggregates that match the filter
-    #[arg(short = 'U', long = "cascade-up")]
+    /// which depends upon continuous aggregates that match the filter.
+    #[arg(short = 'U', long = "cascade-up", verbatim_doc_comment)]
     cascade_up: bool,
 
     /// If filter is provided, automatically include continuous aggregates on
-    /// which continuous aggregates matching the filter depend
-    #[arg(short = 'D', long = "cascade-down")]
+    /// which continuous aggregates matching the filter depend.
+    #[arg(short = 'D', long = "cascade-down", verbatim_doc_comment)]
     cascade_down: bool,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct CleanConfig {
-    /// Connection string to the target database
+    /// Connection string to the target database.
     #[arg(long)]
     target: String,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Creates copy tasks for hypertable and continuous aggregates chunks.
+    ///
+    /// The tasks are based on the specified completion point (--until). An
+    /// optional filter (--filter) can be used to refine the hypertables and
+    /// continuous aggregates targeted for staging.
+    #[command(verbatim_doc_comment)]
     Stage(StageConfig),
+    /// Processes the tasks created during the staging phase.
+    ///
+    /// Copies the corresponding hypertable and continuous aggregates chunks to
+    /// the target Timescale service.
+    #[command(verbatim_doc_comment)]
     Copy(CopyConfig),
+    /// Checks for discrepancies between the source and target chunks' data.
+    ///
+    /// Compares the results of the count for each chunk's table, as well as
+    /// per-column count, max, min, and sum values (when applicable, depending
+    /// on the column data type).
+    #[command(verbatim_doc_comment)]
     Verify(VerifyConfig),
+    /// Removes the administrative schema (__backfill).
+    ///
+    /// The administrative schema is used to store the tasks created during
+    /// the stage command. Any tasks still pending won't be able to be resumed
+    /// and will have to be staged again if the schema is deleted.
+    #[command(verbatim_doc_comment)]
     Clean(CleanConfig),
+    /// Refreshes the continuous aggregates of the target system.
+    ///
+    /// It covers the period from the last refresh in the target to the last
+    /// refresh in the source, solving the problem of continuous aggregates
+    /// being outdated beyond the coverage of the refresh policies.
+    #[command(verbatim_doc_comment)]
     RefreshCaggs(RefreshCaggsConfig),
 }
 
@@ -219,7 +249,7 @@ impl fmt::Display for Command {
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-pub struct Args {
+pub struct CliArgs {
     #[command(subcommand)]
     command: Command,
     #[arg(long, default_value_t = false)]
@@ -264,7 +294,7 @@ struct RefreshCaggsResult {
 async fn main() -> Result<()> {
     setup_logging();
 
-    let args = Args::parse();
+    let args = CliArgs::parse();
 
     std::panic::set_hook(Box::new(|_| {
         // Smuggle the backtrace on panic, see: https://stackoverflow.com/a/73711057/867412
@@ -313,7 +343,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run(args: &Args) -> Result<CommandResult> {
+async fn run(args: &CliArgs) -> Result<CommandResult> {
     match args.command {
         Command::Stage(ref args) => stage(args).await.map(CommandResult::Stage),
         Command::Copy(ref args) => copy(args).await.map(CommandResult::Copy),
