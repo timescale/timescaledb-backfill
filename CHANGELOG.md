@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0](https://github.com/timescale/timescaledb-backfill/compare/v0.6.0...v0.7.0) (2023-10-03)
+
+
+### Features
+
+* add --from flag to stage command ([5aed2fb](https://github.com/timescale/timescaledb-backfill/commit/5aed2fb500c3013486ef37f2cc8535817c72410f))
+* improve help documentation ([5d7b53b](https://github.com/timescale/timescaledb-backfill/commit/5d7b53bdbccbaf5f89c570f3f70fcdc5dbad1dd5))
+* improve help documentation ([f1b64c0](https://github.com/timescale/timescaledb-backfill/commit/f1b64c07e1448bbd88b0daafaee1de962fa97cb0))
+
+
+### Bug Fixes
+
+* verify fails with 'permission denied for schema pg_toast' ([01ead6f](https://github.com/timescale/timescaledb-backfill/commit/01ead6f227ef6a0db979d479e41f484824398497))
+
 ## [0.6.0](https://github.com/timescale/timescaledb-backfill/compare/v0.5.0...v0.6.0) (2023-09-28)
 
 
