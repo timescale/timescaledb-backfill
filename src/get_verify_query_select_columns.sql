@@ -64,7 +64,7 @@ with
                 sum_values
             )
             on (true)
-        where format('%I.%I', nspname, relname)::text::regclass = $1::text::regclass
+        where format('%I.%I', nspname, relname)::text = $1::text::regclass::text
     )
 select format('count(*) AS total_count,
     jsonb_build_object(%s)::text AS count,
