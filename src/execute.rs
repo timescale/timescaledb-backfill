@@ -294,9 +294,8 @@ async fn drop_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> Re
             FROM pg_trigger t
             JOIN pg_class c ON t.tgrelid = c.oid
             JOIN pg_namespace n ON c.relnamespace = n.oid
-            WHERE n.nspname != 'pg_toast' -- In cloud pg_toast gives permission denied
-              AND t.tgname = 'ts_cagg_invalidation_trigger'
-              AND format('%I.%I', n.nspname, c.relname)::regclass = $1::text::regclass
+            WHERE t.tgname = 'ts_cagg_invalidation_trigger'
+              AND format('%I.%I', n.nspname, c.relname)::text = $1::text::regclass::text
             )",
             &[&chunk_name],
         )
