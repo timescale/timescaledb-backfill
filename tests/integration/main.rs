@@ -292,6 +292,8 @@ generate_tests!(
             completion_time: "2023-06-30T23:30:01Z",
             starting_time: Some("2023-06-01T00:00:00Z"),
             post_skeleton_source_sql: vec![],
+            // Insert data on a previous date to assert that we are not
+            // deleting it.
             post_skeleton_target_sql: vec![PsqlInput::Sql(INSERT_DATA_FOR_MAY),],
             asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
                 source
@@ -301,6 +303,35 @@ generate_tests!(
                     .has_table_count("public", "metrics", 1464)
                     .has_chunk_count("public", "metrics", 10);
                 let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
+            }),
+            filter: None,
+        }
+    ),
+    (
+        copy_data_from_a_single_chunk_with_from_flag,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            // Chunk size is 7 days
+            completion_time: "2023-05-11 00:00:00+00",
+            starting_time: Some("2023-05-04 00:00:00+00"),
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                source
+                    .has_table_count("public", "metrics", 744)
+                    .has_chunk_count("public", "metrics", 5);
+                target
+                    .has_table_count("public", "metrics", 168)
+                    .has_chunk_count("public", "metrics", 5);
+                let tasks = 1;
                 target.has_telemetry(vec![
                     assert_stage_telemetry(tasks),
                     assert_copy_telemetry(tasks),

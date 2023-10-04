@@ -182,7 +182,7 @@ inner join lateral
     limit 1
 ) d on (true)
 inner join _timescaledb_catalog.dimension_slice ds
-on (d.id = ds.dimension_id and ds.range_start < d.upper_value and (d.lower_value is null or d.lower_value <= ds.range_end))
+on (d.id = ds.dimension_id and ds.range_start < d.upper_value and (d.lower_value is null or d.lower_value < ds.range_end))
 inner join _timescaledb_catalog.chunk_constraint cc on (ds.id = cc.dimension_slice_id)
 inner join _timescaledb_catalog.chunk c on (cc.chunk_id = c.id and h.id = c.hypertable_id)
 where c.dropped = false
