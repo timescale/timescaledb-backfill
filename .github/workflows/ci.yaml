@@ -29,6 +29,7 @@ jobs:
             files:
               - Cargo.toml
               - '**.rs'
+              - '**.sql'
               - .cargo/config.toml
               - .github/workflows/ci.yaml
 
