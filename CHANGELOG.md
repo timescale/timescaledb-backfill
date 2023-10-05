@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/timescale/timescaledb-backfill/compare/v0.7.0...v0.8.0) (2023-10-05)
+
+
+### Features
+
+* add usage to --help flag ([6e0d0a3](https://github.com/timescale/timescaledb-backfill/commit/6e0d0a3d153c4d87f51f98b108a0a4ab067788c8))
+
+
+### Bug Fixes
+
+* --from including extra chunks ([d96083b](https://github.com/timescale/timescaledb-backfill/commit/d96083bb08552a0f679547a1056ac21b59be0a95))
+
 ## [0.7.0](https://github.com/timescale/timescaledb-backfill/compare/v0.6.0...v0.7.0) (2023-10-03)
 
 
