@@ -4,8 +4,9 @@ use crate::storage::{backfill_schema_exists, init_schema};
 use crate::timescale::{set_query_source_proc_schema, Hypertable, SourceChunk, TargetChunk};
 use crate::TERM;
 use anyhow::{bail, Result};
+use std::collections::HashSet;
 use tokio_postgres::error::SqlState;
-use tokio_postgres::{Client, Config, Transaction};
+use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -203,7 +204,27 @@ pub async fn load_queue(
     };
 
     let chunk_count = rows.len();
+
+    if chunk_count == 0 {
+        return Ok(0);
+    }
+
     let mut skipped_chunks = 0;
+
+    let hypertables: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{}.{}",
+                row.get::<&str, String>("hypertable_schema"),
+                row.get::<&str, String>("hypertable_name")
+            )
+        })
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+
+    validate_hypertables(&source_tx, &target_tx, hypertables).await?;
 
     let stmt = target_tx
         .prepare(include_str!("insert_source_chunks.sql"))
@@ -236,6 +257,7 @@ pub async fn load_queue(
             skipped_chunks += 1;
         }
     }
+    source_tx.rollback().await?;
     target_tx.commit().await?;
 
     if skipped_chunks > 0 {
@@ -286,5 +308,154 @@ pub async fn clean(target_config: &Config) -> Result<()> {
         .client
         .execute("drop schema __backfill cascade", &[])
         .await?;
+    Ok(())
+}
+
+async fn validate_hypertables<T: GenericClient>(
+    source: &T,
+    target: &T,
+    hypertables: Vec<String>,
+) -> Result<()> {
+    let source_schema = r"
+WITH agg AS (
+SELECT
+  table_schema,
+  table_name,
+  JSON_AGG(
+    JSON_BUILD_OBJECT (
+      'ordinal_position', ordinal_position,
+      'column_name', column_name,
+      'data_type', data_type,
+      'udt_schema', udt_schema,
+      'udt_name', udt_name
+    )
+    ORDER BY ordinal_position
+  ) AS columns
+FROM
+  information_schema.columns
+WHERE FORMAT('%s.%s', table_schema, table_name) = ANY($1::TEXT[])
+GROUP BY 1, 2
+)
+SELECT
+  JSON_AGG(
+    JSON_BUILD_OBJECT(
+      'table_schema', table_schema,
+      'table_name', table_name,
+      'columns', columns
+    )
+  )::text
+FROM agg;
+";
+
+    let Some(row) = source.query_opt(source_schema, &[&hypertables]).await? else {
+        bail!(
+            "Couldn't retrieve the source columns information from information_schema.columns for the hypertables: {}",
+            hypertables.join(",")
+        );
+    };
+
+    let source_tables_json: String = row.get(0);
+
+    let query = r#"
+WITH
+  target AS (
+    SELECT
+      table_schema,
+      table_name,
+      JSONB_AGG(
+        JSONB_BUILD_OBJECT(
+          'ordinal_position', ordinal_position,
+          'column_name', column_name,
+          'data_type', data_type,
+          'udt_schema', udt_schema,
+          'udt_name', udt_name
+        )
+        ORDER BY
+          ordinal_position
+      ) AS columns
+    FROM
+      information_schema.columns
+    WHERE
+      FORMAT('%s.%s', table_schema, table_name) = ANY ($1::TEXT[])
+    GROUP BY
+      1,
+      2
+  )
+SELECT
+  format('%s.%s', source.table_schema, source.table_name) as hypertable,
+  (
+    SELECT
+      STRING_AGG(
+        FORMAT(
+          '%s %s (%s.%s)',
+          elements ->> 'column_name',
+          elements ->> 'data_type',
+          elements ->> 'udt_schema',
+          elements ->> 'udt_name'
+        ),
+        ', '
+        ORDER BY
+          (elements ->> 'ordinal_position')::int
+      )
+    FROM
+      jsonb_array_elements(source.columns) AS elements
+  ) AS source_columns,
+  (
+    SELECT
+      STRING_AGG(
+        FORMAT(
+          '%s %s (%s.%s)',
+          elements ->> 'column_name',
+          elements ->> 'data_type',
+          elements ->> 'udt_schema',
+          elements ->> 'udt_name'
+        ),
+        ', '
+        ORDER BY
+          (elements ->> 'ordinal_position')::int
+      )
+    FROM
+      jsonb_array_elements(target.columns) AS elements
+  ) AS target_columns
+FROM
+  JSONB_TO_RECORDSET($2::TEXT::JSONB) source (table_schema TEXT, table_name TEXT, columns JSONB)
+  LEFT JOIN target ON (
+    target.table_schema = source.table_schema
+    AND target.table_name = source.table_name
+  )
+WHERE
+  target.columns IS NULL
+  OR target.columns != source.columns
+"#;
+    let rows = target
+        .query(query, &[&hypertables, &source_tables_json])
+        .await?;
+
+    let errors: Vec<String> = rows
+        .into_iter()
+        .map(
+            |row| match row.get::<&str, Option<String>>("target_columns") {
+                Some(target_columns) => format!(
+                    "- '{}' columns mismatch:\n    * source columns: {}\n    * target columns: {}",
+                    row.get::<&str, String>("hypertable"),
+                    row.get::<&str, String>("source_columns"),
+                    target_columns,
+                ),
+                None => format!(
+                    "- '{}' not found in target:\n    * source columns: {}",
+                    row.get::<&str, String>("hypertable"),
+                    row.get::<&str, String>("source_columns"),
+                ),
+            },
+        )
+        .collect();
+
+    if !errors.is_empty() {
+        bail!(
+            "Found issues between the source and target hypertables:\n{}",
+            errors.join("\n")
+        )
+    }
+
     Ok(())
 }

@@ -1626,6 +1626,14 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
         ],
     )?;
 
+    psql(
+        &target_container,
+        vec![
+            PsqlInput::Sql(SETUP_HYPERTABLE),
+            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
+        ],
+    )?;
+
     DbAssert::new(&source_container.connection_string())
         .unwrap()
         .has_chunk_count("public", "metrics", 3);
@@ -2493,3 +2501,109 @@ fn assert_refresh_caggs_telemetry(refreshed_caggs: usize) -> Box<dyn Fn(JsonAsse
         json_assert.has_string("source_db_tsdb_version");
     })
 }
+
+#[derive(Debug)]
+struct ValidateTestCase<'a, S>
+where
+    S: AsRef<OsStr>,
+{
+    setup_sql: Vec<PsqlInput<S>>,
+    post_skeleton_source_sql: Vec<PsqlInput<S>>,
+    post_skeleton_target_sql: Vec<PsqlInput<S>>,
+    stderr: &'a str,
+}
+
+macro_rules! generate_validate_tests {
+    ($(($func:ident, $testcase:expr),)*) => {
+        $(
+            #[test]
+            fn $func() -> Result<()> {
+                run_validate_test($testcase)
+            }
+        )*
+    }
+}
+
+fn run_validate_test<S: AsRef<OsStr>>(test_case: ValidateTestCase<S>) -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version()));
+    let target_container = docker.run(timescaledb(pg_version()));
+
+    for sql in test_case.setup_sql {
+        psql(&source_container, sql)?;
+    }
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    for sql in test_case.post_skeleton_source_sql {
+        psql(&source_container, sql)?;
+    }
+
+    for sql in test_case.post_skeleton_target_sql {
+        psql(&target_container, sql)?;
+    }
+
+    // Then verify will output a message saying that the chunk no longer exists
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2025-01-01 00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(contains(test_case.stderr));
+
+    Ok(())
+}
+
+generate_validate_tests!(
+    (
+        validate_hypertables_target_additional_column,
+        ValidateTestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![PsqlInput::Sql(
+                "ALTER TABLE metrics add column extra bigint"
+            )],
+            stderr: r#"- 'public.metrics' columns mismatch:
+    * source columns: time timestamp with time zone (pg_catalog.timestamptz), device_id text (pg_catalog.text), val double precision (pg_catalog.float8)
+    * target columns: time timestamp with time zone (pg_catalog.timestamptz), device_id text (pg_catalog.text), val double precision (pg_catalog.float8), extra bigint (pg_catalog.int8)"#
+        }
+    ),
+    (
+        validate_hypertables_source_additional_column,
+        ValidateTestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            post_skeleton_source_sql: vec![PsqlInput::Sql(
+                "ALTER TABLE metrics add column extra bigint"
+            )],
+            post_skeleton_target_sql: vec![],
+            stderr: r#"- 'public.metrics' columns mismatch:
+    * source columns: time timestamp with time zone (pg_catalog.timestamptz), device_id text (pg_catalog.text), val double precision (pg_catalog.float8), extra bigint (pg_catalog.int8)
+    * target columns: time timestamp with time zone (pg_catalog.timestamptz), device_id text (pg_catalog.text), val double precision (pg_catalog.float8)"#
+        }
+    ),
+    (
+        validate_hypertables_table_not_in_target,
+        ValidateTestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![PsqlInput::Sql("DROP TABLE metrics CASCADE")],
+            stderr: r#"- 'public.metrics' not found in target:
+    * source columns: time timestamp with time zone (pg_catalog.timestamptz), device_id text (pg_catalog.text), val double precision (pg_catalog.float8)"#,
+        }
+    ),
+);

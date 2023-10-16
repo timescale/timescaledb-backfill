@@ -342,7 +342,7 @@ impl DbAssert {
             watermark,
             self._fetch_cagg_watermark(schema.as_ref(), name.as_ref())
                 .unwrap(),
-            "{}cagg '{}.{}' watermark missmatch",
+            "{}cagg '{}.{}' watermark mismatch",
             self.name(),
             schema.as_ref(),
             name.as_ref(),
