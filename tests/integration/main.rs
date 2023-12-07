@@ -1,4 +1,8 @@
-use anyhow::{bail, Result};
+use crate::config::{
+    TestConfig, TestConfigClean, TestConfigCopy, TestConfigRefreshCaggs, TestConfigStage,
+    TestConfigVerify,
+};
+use anyhow::{bail, Context, Result};
 use assert_cmd::prelude::*;
 use lazy_static::lazy_static;
 use predicates::prelude::*;
@@ -9,11 +13,14 @@ use std::env;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
 use test_common::*;
 use testcontainers::clients::Cli;
+use tracing::debug;
+
+pub mod config;
 
 lazy_static! {
     static ref TS_LT_2_12: VersionReq = VersionReq::parse("<2.12").unwrap();
@@ -183,6 +190,62 @@ fn external_version() -> Option<PgVersion> {
 
 fn pg_version() -> PgVersion {
     external_version().unwrap_or(PgVersion::PG15)
+}
+
+/// Spawns a backfill process with the specified test configuration [`TestConfig`],
+/// returning the associated [`std::process::Child`]
+pub fn spawn_backfill(config: impl TestConfig) -> Result<Child> {
+    Command::cargo_bin("timescaledb-backfill")?
+        .arg(config.action())
+        .args(config.args())
+        .envs(config.envs())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("couldn't spawn timescaledb-backfill")
+}
+
+/// Runs backfill with the specified test configuration [`TestConfig`]
+/// waits for it to finish and returns its [`std::process::Output`].
+pub fn run_backfill(config: impl TestConfig) -> Result<Output> {
+    debug!("running backfill");
+    let child = spawn_backfill(config).expect("Couldn't launch timescaledb-backfill");
+
+    child.wait_with_output().context("backfill process failed")
+}
+
+pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Result<()> {
+    let pg_dump = Command::new("pg_dump")
+        .args(["-d", source.connection_string().as_str()])
+        .args(["--format", "plain"])
+        .args(["--exclude-table-data", "_timescaledb_internal.*"])
+        .arg("--quote-all-identifiers")
+        .arg("--no-tablespaces")
+        .arg("--no-owner")
+        .arg("--no-privileges")
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let pg_dump_stdout = pg_dump.stdout.unwrap();
+
+    psql(
+        &target,
+        PsqlInput::Sql("select public.timescaledb_pre_restore()"),
+    )?;
+
+    let restore = Command::new("psql")
+        .arg(target.connection_string().as_str())
+        .stdin(Stdio::from(pg_dump_stdout))
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    restore.wait_with_output()?;
+
+    psql(
+        &target,
+        PsqlInput::Sql("select public.timescaledb_post_restore()"),
+    )?;
+    Ok(())
 }
 
 fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(

@@ -377,7 +377,7 @@ impl DbAssert {
         self.name
             .as_ref()
             .map(|n| format!("{n}: "))
-            .unwrap_or_else(String::new)
+            .unwrap_or_default()
     }
 
     fn _get_job_id(&mut self, schema: &str, name: &str, proc_name: &str, owner: &str) -> i32 {

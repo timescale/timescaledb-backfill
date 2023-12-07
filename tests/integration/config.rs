@@ -1,5 +1,5 @@
-use crate::{HasConnectionString, TestConnectionString};
 use std::ffi::OsString;
+use test_common::{HasConnectionString, TestConnectionString};
 
 pub trait TestConfig {
     fn args(&self) -> Vec<OsString>;
