@@ -60,6 +60,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup ssh key to access private crate
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.ACTION_SSH_PRIVATE_KEY }}
+
       - name: Cargo | Rustfmt
         run: cargo fmt -- --check
 
@@ -106,6 +111,11 @@ jobs:
           sudo apt install postgresql postgresql-client -y
           psql --version
           pg_dump --version
+
+      - name: Setup ssh key to access private crate
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.ACTION_SSH_PRIVATE_KEY }}
 
       - name: Test
         run: cargo test --workspace
