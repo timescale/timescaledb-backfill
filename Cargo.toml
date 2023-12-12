@@ -34,6 +34,7 @@ tokio = { version = "1.32.0", features = ["fs", "io-util", "macros", "rt-multi-t
 tokio-postgres = { version = "0.7.9", features = ["runtime", "with-serde_json-1", "with-uuid-1"], default-features = false }
 tokio-postgres-rustls = { version = "0.10.0", default-features = false, git = "https://github.com/JamesGuthrie/tokio-postgres-rustls.git", rev = "b78dda2a9a1a23d3dbed4ecded7defbbcd831b37" }
 tokio-util = "0.7.9"
+telemetry-client = { git = "ssh://git@github.com/timescale/telemetry-client.git", rev = "v0.1.1" }
 tracing = { version = "0.1.37", default-features = false, features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.17", default-features = false, features = ["env-filter", "fmt", "json", "std"] }
 uuid = { version = "1.4.1", features = ["v4", "serde"] }
@@ -42,7 +43,8 @@ uuid = { version = "1.4.1", features = ["v4", "serde"] }
 assert_cmd = "2.0.12"
 postgres = "0.19.7"
 pretty_env_logger = "0.5.0"
+reqwest = "0.11.22"
 tap-reader = "1.0.1"
 testcontainers = "0.14.0"
-test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.9.0"}
+test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.10.0"}
 strip-ansi-escapes = "0.2.0"

@@ -263,7 +263,7 @@ impl fmt::Display for Command {
 pub struct CliArgs {
     #[command(subcommand)]
     command: Command,
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, global = true)]
     disable_telemetry: bool,
 }
 
@@ -594,9 +594,9 @@ async fn report_telemetry(
     command_duration: Duration,
     command_result: Result<&CommandResult, &anyhow::Error>,
 ) -> Result<()> {
-    let target = target_from_command(command).await?;
+    let mut target = target_from_command(command).await?;
 
-    let mut telemetry = Telemetry::from_target_session(&target)
+    let mut telemetry = Telemetry::from_target_session(&mut target)
         .await?
         .with_command(command.to_string())
         .with_command_duration(command_duration);
