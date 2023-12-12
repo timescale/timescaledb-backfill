@@ -3,7 +3,9 @@ use crate::storage::backfill_schema_exists;
 use crate::PanicError;
 use anyhow::{Context, Error, Result};
 use serde::Serialize;
+use telemetry_client::{DbUuid, Telemetry as TimescaleTelemetry, TelemetryClient};
 use tokio::time::Duration;
+use tokio_postgres::{Client, GenericClient};
 use uuid::Uuid;
 
 const METADATA_KEY: &str = "timescaledb-backfill";
@@ -27,11 +29,25 @@ async fn fetch_session(target: &Target) -> Result<Option<Session>> {
     }))
 }
 
-async fn fetch_pg_version(source: &mut Source) -> anyhow::Result<String> {
+async fn fetch_db_uuid(client: &mut Client) -> Result<Option<String>> {
+    let tx = client.transaction().await?;
+    let has_metadata_table_query = "SELECT EXISTS (SELECT true FROM information_schema.tables WHERE table_schema = '_timescaledb_catalog' AND table_name = 'metadata');";
+    let row = tx.query_one(has_metadata_table_query, &[]).await?;
+    let has_metadata_table: bool = row.get(0);
+    if has_metadata_table {
+        let query =
+            "SELECT value as uuid FROM _timescaledb_catalog.metadata WHERE key = 'uuid' LIMIT 1";
+        let row = tx.query_one(query, &[]).await?;
+        Ok(Some(row.get("uuid")))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn fetch_pg_version<T: GenericClient>(client: &mut T) -> Result<String> {
     // We replicate the same way TimescaleDB does for determining Postgres version.
     // https://github.com/timescale/timescaledb/blob/fb65086b5542a871dc3d9757724e886dca904ef6/src/telemetry/telemetry.c#L552-L574
-    let pg_version = source
-        .client
+    let pg_version = client
         .query_one(
             "SELECT (current_setting('server_version_num')::int/10000 || '.' || current_setting('server_version_num')::int%100)::text;",
             &[],
@@ -41,8 +57,8 @@ async fn fetch_pg_version(source: &mut Source) -> anyhow::Result<String> {
     Ok(pg_version)
 }
 
-async fn fetch_tsdb_version(source: &mut Source) -> anyhow::Result<String> {
-    let tx = source.transaction().await?;
+async fn fetch_tsdb_version<T: GenericClient>(client: &mut T) -> Result<String> {
+    let tx = client.transaction().await?;
     let tsdb_version = tx
         .query_one(
             "select extversion::text from pg_extension where extname = 'timescaledb'",
@@ -61,9 +77,13 @@ pub struct Telemetry {
     timescaledb_backfill_version: String,
     command: String,
     debug_mode: bool,
-    command_duration_secs: u64,
+    command_duration_secs: f64,
     source_db_pg_version: Option<String>,
     source_db_tsdb_version: Option<String>,
+    source_db_uuid: Option<String>,
+    target_db_pg_version: Option<String>,
+    target_db_tsdb_version: Option<String>,
+    target_db_uuid: Option<String>,
 
     refreshed_caggs: Option<usize>,
     staged_tasks: Option<usize>,
@@ -78,17 +98,24 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
-    pub async fn from_target_session(target: &Target) -> Result<Self> {
+    pub async fn from_target_session(target: &mut Target) -> Result<Self> {
         let session = fetch_session(target).await?;
+        let target_db_uuid = fetch_db_uuid(&mut target.client).await?;
+        let target_db_pg_version = fetch_pg_version(&mut target.client).await.ok();
+        let target_db_tsdb_version = fetch_tsdb_version(&mut target.client).await.ok();
         Ok(Self {
             session_id: session.as_ref().map(|s| s.id),
             session_created_at: session.map(|s| s.created_at),
             timescaledb_backfill_version: env!("CARGO_PKG_VERSION").to_string(),
+            target_db_uuid,
             debug_mode: cfg!(debug_assertions),
             command: String::default(),
-            command_duration_secs: 0,
+            command_duration_secs: 0f64,
             source_db_pg_version: None,
             source_db_tsdb_version: None,
+            source_db_uuid: None,
+            target_db_pg_version,
+            target_db_tsdb_version,
             staged_tasks: None,
             copy_tasks_finished: None,
             copy_tasks_total_bytes: None,
@@ -102,8 +129,9 @@ impl Telemetry {
     }
 
     pub async fn with_source_db(self, source: &mut Source) -> Telemetry {
-        let pg_version = fetch_pg_version(source).await;
-        let tsdb_version = fetch_tsdb_version(source).await;
+        let pg_version = fetch_pg_version(&mut source.client).await;
+        let tsdb_version = fetch_tsdb_version(&mut source.client).await;
+        let db_uuid = fetch_db_uuid(&mut source.client).await.ok().flatten();
 
         Telemetry {
             // At this point the command finished executing. We rather report
@@ -111,6 +139,7 @@ impl Telemetry {
             // to source at this point.
             source_db_pg_version: pg_version.ok(),
             source_db_tsdb_version: tsdb_version.ok(),
+            source_db_uuid: db_uuid,
             ..self
         }
     }
@@ -145,7 +174,7 @@ impl Telemetry {
 
     pub fn with_command_duration(self, command_duration: Duration) -> Telemetry {
         Telemetry {
-            command_duration_secs: command_duration.as_secs(),
+            command_duration_secs: command_duration.as_secs_f64(),
             ..self
         }
     }
@@ -189,7 +218,28 @@ impl Telemetry {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct CustomTelemetry {
+    version: usize,
+    source_db_pg_version: Option<String>,
+    source_db_tsdb_version: Option<String>,
+    target_db_pg_version: Option<String>,
+    target_db_tsdb_version: Option<String>,
+    refreshed_caggs: Option<usize>,
+    staged_tasks: Option<usize>,
+    copy_tasks_finished: Option<usize>,
+    copy_tasks_total_bytes: Option<usize>,
+    verify_tasks_finished: Option<usize>,
+    verify_tasks_failures: Option<usize>,
+}
+
 pub async fn report(target: &Target, telemetry: &Telemetry) -> Result<()> {
+    let _ = report_telemetry(telemetry).await;
+    let _ = store_in_target(target, telemetry).await;
+    Ok(())
+}
+
+pub async fn store_in_target(target: &Target, telemetry: &Telemetry) -> Result<()> {
     let data =
         serde_json::to_value(telemetry).with_context(|| "error converting data to JSON string")?;
 
@@ -255,4 +305,132 @@ pub async fn report(target: &Target, telemetry: &Telemetry) -> Result<()> {
         .with_context(|| "error inserting into metadata table")?;
 
     Ok(())
+}
+
+pub async fn report_telemetry(telemetry: &Telemetry) -> Result<()> {
+    let custom_telemetry = CustomTelemetry {
+        // NOTE: increment version if you modify fields in this struct
+        version: 1,
+        // NOTE: increment version if you modify fields in this struct
+        source_db_pg_version: telemetry.source_db_pg_version.clone(),
+        // NOTE: increment version if you modify fields in this struct
+        source_db_tsdb_version: telemetry.source_db_tsdb_version.clone(),
+        // NOTE: increment version if you modify fields in this struct
+        target_db_pg_version: telemetry.target_db_pg_version.clone(),
+        // NOTE: increment version if you modify fields in this struct
+        target_db_tsdb_version: telemetry.target_db_tsdb_version.clone(),
+        // NOTE: increment version if you modify fields in this struct
+        refreshed_caggs: telemetry.refreshed_caggs,
+        // NOTE: increment version if you modify fields in this struct
+        staged_tasks: telemetry.staged_tasks,
+        // NOTE: increment version if you modify fields in this struct
+        copy_tasks_finished: telemetry.copy_tasks_finished,
+        // NOTE: increment version if you modify fields in this struct
+        copy_tasks_total_bytes: telemetry.copy_tasks_total_bytes,
+        // NOTE: increment version if you modify fields in this struct
+        verify_tasks_finished: telemetry.verify_tasks_finished,
+        // NOTE: increment version if you modify fields in this struct
+        verify_tasks_failures: telemetry.verify_tasks_failures,
+    };
+
+    let db_uuids = [
+        ("source_db", &telemetry.source_db_uuid),
+        ("target_db", &telemetry.target_db_uuid),
+    ]
+    .iter()
+    .filter_map(|item| {
+        if let (label, Some(uuid)) = item {
+            Some(DbUuid::new(label, &uuid.to_string().as_str()))
+        } else {
+            None
+        }
+    })
+    .collect::<Vec<_>>();
+
+    let telemetry = TimescaleTelemetry::builder()
+        .program("timescaledb-backfill")
+        .version(env!("CARGO_PKG_VERSION"))
+        .duration(telemetry.command_duration_secs)
+        .success(telemetry.success)
+        .metadata(custom_telemetry)
+        .db_uuids(db_uuids)
+        .build()?;
+
+    let client = TelemetryClient::default();
+    if cfg!(not(debug_assertions)) {
+        // Note: we don't report any telemetry when running a non-release build
+        client.send(&telemetry).await?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use crate::telemetry::fetch_db_uuid;
+    use anyhow::Result;
+    use test_common::PgVersion::PG15;
+    use test_common::{postgres, timescaledb, HasConnectionString};
+    use testcontainers::clients::Cli;
+    use tokio::task::JoinHandle;
+    use tokio_postgres::{Client, NoTls};
+
+    struct Connected {
+        client: Client,
+        #[allow(dead_code)]
+        handle: JoinHandle<()>,
+    }
+
+    async fn connect(has_conn_str: &impl HasConnectionString) -> Result<Connected> {
+        let (client, connection) =
+            tokio_postgres::connect(has_conn_str.connection_string().as_str(), NoTls).await?;
+
+        let handle = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        Ok(Connected { client, handle })
+    }
+
+    #[tokio::test]
+    async fn fetch_db_uuid_succeeds_with_timescaledb() -> Result<()> {
+        let _ = pretty_env_logger::try_init();
+
+        let docker = Cli::default();
+        let source_container = docker.run(timescaledb(PG15));
+        let mut connected = connect(&source_container).await?;
+
+        let result = fetch_db_uuid(&mut connected.client).await;
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.is_some());
+        let result = result.unwrap();
+        let db_uuid: String = connected
+            .client
+            .query_one(
+                "SELECT value AS uuid FROM _timescaledb_catalog.metadata WHERE key = 'uuid'",
+                &[],
+            )
+            .await?
+            .get("uuid");
+        assert_eq!(result, db_uuid);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_db_uuid_returns_none_with_postgres() -> Result<()> {
+        let _ = pretty_env_logger::try_init();
+
+        let docker = Cli::default();
+        let source_container = docker.run(postgres(PG15));
+        let mut connected = connect(&source_container).await?;
+
+        let result = fetch_db_uuid(&mut connected.client).await;
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.is_none());
+        Ok(())
+    }
 }
