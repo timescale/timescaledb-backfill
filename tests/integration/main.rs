@@ -224,6 +224,7 @@ pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Res
         .arg("--no-owner")
         .arg("--no-privileges")
         .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()?;
 
     let pg_dump_stdout = pg_dump.stdout.unwrap();
