@@ -3,6 +3,7 @@ use crate::execute::{chunk_exists, copy_chunk};
 use crate::task::{
     claim_copy_task, claim_verify_task, complete_copy_task, complete_verify_task, TaskType,
 };
+use crate::timescale::QuotedName;
 use crate::verify::{verify_chunk_data, VerificationError};
 use crate::workers::TaskResult::{NoItem, Processed};
 use crate::TERM;

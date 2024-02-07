@@ -2,7 +2,7 @@ use crate::execute::CopyMode::UncompressedOnly;
 use crate::sql::quote_table_name;
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
-    set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, SourceChunk,
+    set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, QuotedName, SourceChunk,
     SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
 };
 use anyhow::{anyhow, Context, Result};
@@ -90,15 +90,41 @@ pub async fn copy_chunk(
         }
     }
 
-    let uncompressed_result = copy_chunk_data(
-        source_tx,
-        target_tx,
-        &task.source_chunk,
-        &target_chunk,
-        &task.filter,
-        UncompressedOnly,
-    )
-    .await?;
+    let source_chunk_has_uncompressed_rows =
+        hss_uncompressed_rows(source_tx, &task.source_chunk).await?;
+    let target_chunk_is_partial = chunk_status_is_partial(target_tx, &target_chunk).await?;
+
+    let uncompressed_result = if source_chunk_has_uncompressed_rows
+        && target_chunk_is_compressed
+        && !target_chunk_is_partial
+    {
+        // If the source chunk has uncompressed rows, and the target chunk status
+        // is compressed but not partial, we need to copy the uncompressed rows
+        // into the hypertable instead of directly into the chunk.
+        // The alternative would be to write into the chunk, and then set the chunk
+        // status to partial, but on Timescale the `tsdbadmin` user doesn't have
+        // permissions to do this.
+        warn!("chunk {} is partial in source, but not in target, copying into hypertable instead of chunk, this may cause a reduction in parallelism", task.source_chunk.quoted_name());
+        copy_chunk_data(
+            source_tx,
+            target_tx,
+            &task.source_chunk,
+            &target_chunk.hypertable,
+            &task.filter,
+            UncompressedOnly,
+        )
+        .await?
+    } else {
+        copy_chunk_data(
+            source_tx,
+            target_tx,
+            &task.source_chunk,
+            &target_chunk,
+            &task.filter,
+            UncompressedOnly,
+        )
+        .await?
+    };
 
     let mut compressed_result = None;
 
@@ -138,17 +164,21 @@ pub async fn copy_chunk(
             )
             .await?;
         };
-        if uncompressed_result.rows > 0 {
-            // We wrote compressed rows, and there are uncompressed rows. This
-            // chunk should be marked as being partial. If it was already
-            // partial, this will have no effect.
-            set_chunk_status_to_partial(target_tx, &target_chunk).await?;
-        }
     }
     Ok(CopyResult {
         rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
         bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
     })
+}
+
+async fn hss_uncompressed_rows(source_tx: &Transaction<'_>, chunk: &SourceChunk) -> Result<bool> {
+    let row = source_tx
+        .query_one(
+            &format!("SELECT exists(SELECT 1 FROM ONLY {})", &chunk.quoted_name()),
+            &[],
+        )
+        .await?;
+    Ok(row.get("exists"))
 }
 
 async fn supports_mutation_of_compressed_hypertables(tx: &Transaction<'_>) -> Result<bool> {
@@ -164,21 +194,22 @@ async fn supports_mutation_of_compressed_hypertables(tx: &Transaction<'_>) -> Re
     ", &[]).await?.get(0))
 }
 
-async fn set_chunk_status_to_partial(
+async fn chunk_status_is_partial(
     target_tx: &Transaction<'_>,
     target_chunk: &TargetChunk,
-) -> Result<()> {
-    target_tx
-        .execute(
+) -> Result<bool> {
+    // Note: status is a bitfield, the 4th bit indicates whether the chunk is partially compressed
+    let row = target_tx
+        .query_one(
             r"
-        UPDATE _timescaledb_catalog.chunk
-        SET status = status | 8
+        SELECT (status & 8)::bool as is_partial
+        FROM _timescaledb_catalog.chunk
         WHERE schema_name = $1
           AND table_name = $2",
             &[&target_chunk.schema, &target_chunk.table],
         )
         .await?;
-    Ok(())
+    Ok(row.get("is_partial"))
 }
 
 async fn compress_chunk(tx: &Transaction<'_>, chunk: &TargetChunk) -> Result<()> {
@@ -219,49 +250,49 @@ enum CopyMode {
     UncompressedAndCompressed,
 }
 
-async fn copy_chunk_data(
+async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
-    source_chunk: &SourceChunk,
-    target_chunk: &TargetChunk,
+    source_table: &S,
+    target_table: &T,
     filter: &Option<String>,
     mode: CopyMode,
 ) -> Result<CopyResult> {
-    debug!("Copying uncompressed chunk {}", source_chunk.quoted_name());
+    debug!("Copying uncompressed chunk {}", source_table.quoted_name());
 
-    let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
+    let trigger_dropped = drop_invalidation_trigger(target_tx, &target_table.quoted_name()).await?;
 
     if let Some(filter) = filter {
-        delete_data_using_filter(target_tx, target_chunk, filter).await?;
+        delete_data_using_filter(target_tx, target_table, filter).await?;
     } else {
-        delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
+        delete_all_rows_from_chunk(target_tx, &target_table.quoted_name()).await?;
     }
 
     let copy_result = copy_chunk_from_source_to_target(
         source_tx,
         target_tx,
-        &source_chunk.quoted_name(),
-        &target_chunk.quoted_name(),
+        &source_table.quoted_name(),
+        &target_table.quoted_name(),
         filter,
         mode == UncompressedOnly,
     )
     .await?;
 
     if trigger_dropped {
-        create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
+        create_invalidation_trigger(target_tx, &target_table.quoted_name()).await?;
     }
     debug!(
         "Finished copying uncompressed chunk {}. Starting analysis.",
-        source_chunk.quoted_name()
+        source_table.quoted_name()
     );
 
     target_tx
-        .execute(&format!("analyze {}", target_chunk.quoted_name()), &[])
+        .execute(&format!("analyze {}", target_table.quoted_name()), &[])
         .await?;
 
     debug!(
         "Finished analyzing uncompressed chunk {}",
-        source_chunk.quoted_name()
+        source_table.quoted_name()
     );
 
     Ok(copy_result)
@@ -269,10 +300,10 @@ async fn copy_chunk_data(
 
 async fn delete_data_using_filter(
     tx: &Transaction<'_>,
-    chunk: &TargetChunk,
+    table: &impl QuotedName,
     filter: &str,
 ) -> Result<()> {
-    let chunk_name = chunk.quoted_name();
+    let chunk_name = table.quoted_name();
     debug!("Deleting rows from chunk {chunk_name} with filter {filter}");
     let rows = tx
         .execute(&format!("DELETE FROM {chunk_name} WHERE {filter}"), &[])
