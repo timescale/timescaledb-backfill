@@ -44,5 +44,5 @@ postgres = "0.19.7"
 pretty_env_logger = "0.5.0"
 tap-reader = "1.0.1"
 testcontainers = "0.14.0"
-test-common = { git = "git+ssh://git@github.com/timescale/test-common.git", rev = "v0.9.0"}
+test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.9.0"}
 strip-ansi-escapes = "0.2.0"
