@@ -2,6 +2,7 @@ use crate::config::{
     TestConfig, TestConfigClean, TestConfigCopy, TestConfigRefreshCaggs, TestConfigStage,
     TestConfigVerify,
 };
+use crate::TsVersion::{TS210, TS211, TS212, TS213};
 use anyhow::{bail, Context, Result};
 use assert_cmd::prelude::*;
 use lazy_static::lazy_static;
@@ -11,6 +12,7 @@ use semver::{Version, VersionReq};
 use std::clone::Clone;
 use std::env;
 use std::ffi::OsStr;
+use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
@@ -18,6 +20,7 @@ use strip_ansi_escapes::strip;
 use tap_reader::Tap;
 use test_common::*;
 use testcontainers::clients::Cli;
+use testcontainers::images::generic::GenericImage;
 use tracing::debug;
 
 pub mod config;
@@ -192,6 +195,50 @@ fn pg_version() -> PgVersion {
     external_version().unwrap_or(PgVersion::PG15)
 }
 
+#[allow(dead_code)]
+#[derive(PartialEq, Eq)]
+pub enum TsVersion {
+    TS210,
+    TS211,
+    TS212,
+    TS213,
+}
+
+impl From<String> for TsVersion {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "2.10" => TS210,
+            "2.11" => TS211,
+            "2.12" => TS212,
+            "2.13" => TS213,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl Display for TsVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TS210 => write!(f, "2.10"),
+            TS211 => write!(f, "2.11"),
+            TS212 => write!(f, "2.12"),
+            TS213 => write!(f, "2.13"),
+        }
+    }
+}
+
+fn ts_version() -> TsVersion {
+    env::var("BF_TEST_TS_VERSION")
+        .ok()
+        .map(TsVersion::from)
+        .unwrap_or(TS213)
+}
+
+fn timescaledb(pg_version: PgVersion, ts_version: TsVersion) -> GenericImage {
+    let version_tag = format!("pg{}-ts{}", pg_version, ts_version);
+    generic_postgres(TIMESCALEDB_IMAGE, version_tag.as_str())
+}
+
 /// Spawns a backfill process with the specified test configuration [`TestConfig`],
 /// returning the associated [`std::process::Child`]
 pub fn spawn_backfill(config: impl TestConfig) -> Result<Child> {
@@ -214,7 +261,10 @@ pub fn run_backfill(config: impl TestConfig) -> Result<Output> {
     child.wait_with_output().context("backfill process failed")
 }
 
-pub fn copy_skeleton_schema<C: HasConnectionString>(source: C, target: C) -> Result<()> {
+pub fn copy_skeleton_schema<S: HasConnectionString, T: HasConnectionString>(
+    source: S,
+    target: T,
+) -> Result<()> {
     let pg_dump = Command::new("pg_dump")
         .args(["-d", source.connection_string().as_str()])
         .args(["--format", "plain"])
@@ -256,26 +306,33 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    configure_cloud_setup(&target_container)?;
+
+    let conn_tsdbadmin = target_container
+        .connection_string()
+        .user("tsdbadmin")
+        .dbname("tsdb");
 
     for sql in test_case.setup_sql {
         psql(&source_container, sql)?;
     }
 
-    copy_skeleton_schema(&source_container, &target_container)?;
+    copy_skeleton_schema(&source_container, &conn_tsdbadmin)?;
 
     for sql in test_case.post_skeleton_source_sql {
         psql(&source_container, sql)?;
     }
 
     for sql in test_case.post_skeleton_target_sql {
-        psql(&target_container, sql)?;
+        psql(&conn_tsdbadmin, sql)?;
     }
 
     let mut stage_config = TestConfigStage::new(
         &source_container,
-        &target_container,
+        &conn_tsdbadmin,
         test_case.completion_time,
     );
 
@@ -295,7 +352,7 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
 
     run_backfill(stage_config).unwrap().assert().success();
 
-    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+    run_backfill(TestConfigCopy::new(&source_container, &conn_tsdbadmin))
         .unwrap()
         .assert()
         .success();
@@ -303,11 +360,11 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
         .unwrap()
         .with_name("source");
-    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+    let mut target_dbassert = DbAssert::new(&conn_tsdbadmin.connection_string())
         .unwrap()
         .with_name("target");
 
-    run_backfill(TestConfigVerify::new(&source_container, &target_container))
+    run_backfill(TestConfigVerify::new(&source_container, &conn_tsdbadmin))
         .unwrap()
         .assert()
         .success()
@@ -315,6 +372,22 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
 
     (test_case.asserts)(&mut source_dbassert, &mut target_dbassert);
 
+    Ok(())
+}
+
+/// Timescale cloud has special configuration which restricts which actions can
+/// be performed in the database instance. This function performs the following
+/// actions:
+/// - Creates the `tsdbadmin` role
+/// - Creates the `tsdb` database, with owner `tsdbadmin`
+/// - Applies most (?) of the restrictions which Timescale cloud does
+///   Note: it's somewhat non-trivial to know exactly which restrictions are
+///   applied. We cherry-picked these from: https://github.com/timescale/timescaledb-operator/blob/6b99a24ff1d72751249e4238db54b84e54e351a3/operator/pkg/options/scripts/after-create.sql
+fn configure_cloud_setup<C: HasConnectionString>(container: &C) -> Result<()> {
+    psql(
+        &container,
+        PsqlInput::File(PathBuf::from("tests/cloud_init.sql")),
+    )?;
     Ok(())
 }
 
@@ -1321,8 +1394,8 @@ fn copy_without_stage_error() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     run_backfill(
         TestConfigCopy::new(&source_container, &target_container),
@@ -1343,8 +1416,8 @@ fn copy_without_available_tasks_error() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -1383,8 +1456,8 @@ fn clean_removes_schema() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
 
@@ -1421,8 +1494,8 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
@@ -1506,8 +1579,8 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
@@ -1576,8 +1649,8 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     // Given 2 chunks
     psql(
@@ -1663,8 +1736,8 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(
         &source_container,
@@ -1723,8 +1796,8 @@ fn duplicated_stage_task_is_skipped() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     copy_skeleton_schema(&source_container, &target_container)?;
@@ -1836,8 +1909,8 @@ fn verify_task_with_deleted_source_chunk() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     // Given a chunk that's staged and copied
     stage_and_copy_a_single_chunk(&source_container, &target_container)?;
@@ -1872,8 +1945,8 @@ fn verify_task_with_deleted_target_chunk() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     // Given a chunk that's staged and copied
     stage_and_copy_a_single_chunk(&source_container, &target_container)?;
@@ -1906,8 +1979,8 @@ fn verify_task_with_extra_rows_in_source() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     // Given a chunk that's staged and copied
     stage_and_copy_a_single_chunk(&source_container, &target_container)?;
@@ -2090,8 +2163,8 @@ where
     let _ = pretty_env_logger::try_init();
     let docker = testcontainers::clients::Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(
         &source_container,
@@ -2389,8 +2462,8 @@ fn telemetry_captures_error_reason() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
@@ -2593,8 +2666,8 @@ fn run_validate_test<S: AsRef<OsStr>>(test_case: ValidateTestCase<S>) -> Result<
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version()));
-    let target_container = docker.run(timescaledb(pg_version()));
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
     for sql in test_case.setup_sql {
         psql(&source_container, sql)?;
