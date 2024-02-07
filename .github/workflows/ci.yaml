@@ -86,7 +86,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgversion: [12, 13, 14, 15]
+        pgversion: [13, 14, 15]
+        tsversion: [2.13]
 
     runs-on: ubuntu-latest
     steps:
@@ -128,6 +129,7 @@ jobs:
         run: cargo test --workspace
         env:
           BF_TEST_PG_VERSION: ${{ matrix.pgversion }}
+          BF_TEST_TS_VERSION: ${{ matrix.tsversion }}
 
   # This allows us to set a single job which must pass in GitHub's branch protection rules.
   ci-result:
