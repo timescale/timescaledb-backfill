@@ -10,6 +10,11 @@ permissions:
 
 name: release-please
 
+env:
+  # force cargo to use the git cli. Combined with the "https with PAT" path
+  # rewriting, this allows CI to check out private git repos with low hassle.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -35,6 +40,12 @@ jobs:
       VERSIONED_TARFILE_NAME: timescaledb-backfill-${{ needs.release-please.outputs.tag_name }}-x86_64-linux.tar.gz
     steps:
       - uses: actions/checkout@v3
+
+      # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
+      # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
+      - name: Setup git PAT override
+        run: |
+          git config --global --add url."https://${{ secrets.ORG_AUTOMATION_TOKEN }}:@github".insteadOf ssh://git@github
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y musl-tools
