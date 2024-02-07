@@ -11,6 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}-1
   cancel-in-progress: true
 
+env:
+  # force cargo to use the git cli. Combined with the "https with PAT" path
+  # rewriting, this allows CI to check out private git repos with low hassle.
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
 jobs:
   changes:
     runs-on: non-prod
@@ -47,6 +52,12 @@ jobs:
       - name: Setup | Checkout
         uses: actions/checkout@v3
 
+      # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
+      # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
+      - name: Setup git PAT override
+        run: |
+          git config --global --add url."https://${{ secrets.ORG_AUTOMATION_TOKEN }}:@github".insteadOf ssh://git@github
+
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
@@ -59,11 +70,6 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
-
-      - name: Setup ssh key to access private crate
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.ACTION_SSH_PRIVATE_KEY }}
 
       - name: Cargo | Rustfmt
         run: cargo fmt -- --check
@@ -86,6 +92,12 @@ jobs:
     steps:
       - name: Setup | Checkout
         uses: actions/checkout@v3
+
+      # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
+      # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
+      - name: Setup git PAT override
+        run: |
+          git config --global --add url."https://${{ secrets.ORG_AUTOMATION_TOKEN }}:@github".insteadOf ssh://git@github
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -111,11 +123,6 @@ jobs:
           sudo apt install postgresql postgresql-client -y
           psql --version
           pg_dump --version
-
-      - name: Setup ssh key to access private crate
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.ACTION_SSH_PRIVATE_KEY }}
 
       - name: Test
         run: cargo test --workspace
