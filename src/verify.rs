@@ -1,3 +1,4 @@
+use crate::timescale::QuotedName;
 use crate::{execute::chunk_exists, task::VerifyTask};
 use anyhow::{bail, Ok, Result};
 use diffy::{create_patch, PatchFormatter};

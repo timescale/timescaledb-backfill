@@ -75,10 +75,20 @@ pub struct DimensionRange {
     pub range_end: i64,
 }
 
+pub trait QuotedName {
+    fn quoted_name(&self) -> String;
+}
+
 #[derive(Debug, Clone)]
 pub struct Hypertable {
     pub schema: String,
     pub table: String,
+}
+
+impl QuotedName for Hypertable {
+    fn quoted_name(&self) -> String {
+        quote_table_name(&self.schema, &self.table)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,8 +128,10 @@ impl Chunk {
         }
         serde_json::to_string(&dimensions_json)
     }
+}
 
-    pub fn quoted_name(&self) -> String {
+impl QuotedName for Chunk {
+    fn quoted_name(&self) -> String {
         quote_table_name(&self.schema, &self.table)
     }
 }
