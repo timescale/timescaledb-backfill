@@ -237,6 +237,7 @@ fn ts_version() -> TsVersion {
 fn timescaledb(pg_version: PgVersion, ts_version: TsVersion) -> GenericImage {
     let version_tag = format!("pg{}-ts{}", pg_version, ts_version);
     generic_postgres(TIMESCALEDB_IMAGE, version_tag.as_str())
+        .with_env_var("TIMESCALEDB_TELEMETRY", "off")
 }
 
 /// Spawns a backfill process with the specified test configuration [`TestConfig`],
