@@ -87,7 +87,7 @@ jobs:
       fail-fast: false
       matrix:
         pgversion: [13, 14, 15]
-        tsversion: [2.13]
+        tsversion: [2.11, 2.12, 2.13]
 
     runs-on: ubuntu-latest
     steps:
