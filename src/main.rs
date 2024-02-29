@@ -12,6 +12,7 @@ use console::Term;
 use futures_lite::FutureExt;
 use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
+use semver::{Version, VersionReq};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
@@ -437,6 +438,20 @@ async fn abort_on_incompatible_timescaledb_versions(
 ) -> Result<()> {
     let source_version = fetch_tsdb_version(&mut source.client).await?;
     let target_version = fetch_tsdb_version(&mut target.client).await?;
+
+    let ge_214 = VersionReq::parse(">=2.14.0").unwrap();
+
+    if let Ok(v) = Version::parse(&source_version) {
+        if ge_214.matches(&v) {
+            bail!("timescaledb-backfill does not yet support timescaledb >= 2.14.0, source={source_version}")
+        }
+    }
+
+    if let Ok(v) = Version::parse(&target_version) {
+        if ge_214.matches(&v) {
+            bail!("timescaledb-backfill does not yet support timescaledb => 2.14.0, target={target_version}")
+        }
+    }
 
     if source_version != target_version {
         bail!("timescaledb extension version is different in source and target: source={source_version}, target={target_version}");
