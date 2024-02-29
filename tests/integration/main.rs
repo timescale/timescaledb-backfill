@@ -2,7 +2,7 @@ use crate::config::{
     TestConfig, TestConfigClean, TestConfigCopy, TestConfigRefreshCaggs, TestConfigStage,
     TestConfigVerify,
 };
-use crate::TsVersion::{TS210, TS211, TS212, TS213};
+use crate::TsVersion::{TS210, TS211, TS212, TS213, TS214};
 use anyhow::{bail, Context, Result};
 use assert_cmd::prelude::*;
 use lazy_static::lazy_static;
@@ -202,6 +202,7 @@ pub enum TsVersion {
     TS211,
     TS212,
     TS213,
+    TS214,
 }
 
 impl From<String> for TsVersion {
@@ -211,6 +212,7 @@ impl From<String> for TsVersion {
             "2.11" => TS211,
             "2.12" => TS212,
             "2.13" => TS213,
+            "2.14" => TS214,
             _ => unimplemented!(),
         }
     }
@@ -223,6 +225,7 @@ impl Display for TsVersion {
             TS211 => write!(f, "2.11"),
             TS212 => write!(f, "2.12"),
             TS213 => write!(f, "2.13"),
+            TS214 => write!(f, "2.14"),
         }
     }
 }
@@ -1552,6 +1555,51 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
             ))
             .and(contains("Copied 3.1MB from 1 chunks")),
     );
+
+    Ok(())
+}
+
+#[test]
+fn abort_on_timescaledb_ge_214() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), TS214));
+    let target_container = docker.run(timescaledb(pg_version(), TS214));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+            INSERT INTO metrics (time, device_id, val)
+            SELECT time, device_id, random()
+            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
+            CROSS JOIN generate_series(1, 10) device_id;
+        ",
+        ),
+    )?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-05-10T23:59:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(contains(
+        "timescaledb-backfill does not yet support timescaledb >= 2.14.0",
+    ));
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .failure()
+        .stderr(contains(
+            "timescaledb-backfill does not yet support timescaledb >= 2.14.0",
+        ));
 
     Ok(())
 }
