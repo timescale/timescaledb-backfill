@@ -1556,6 +1556,51 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn abort_on_mismatching_timescaledb_version() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), TS212));
+    let target_container = docker.run(timescaledb(pg_version(), TS213));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+            INSERT INTO metrics (time, device_id, val)
+            SELECT time, device_id, random()
+            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
+            CROSS JOIN generate_series(1, 10) device_id;
+        ",
+        ),
+    )?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-05-10T23:59:00Z",
+    ))
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(contains(
+        "timescaledb extension version is different in source and target",
+    ));
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .failure()
+        .stderr(contains(
+            "timescaledb extension version is different in source and target",
+        ));
+
+    Ok(())
+}
+
 fn wait_for_message_in_output<T: Read>(output: &mut T, message: &str) -> Result<()> {
     let logs = BufReader::new(output);
 

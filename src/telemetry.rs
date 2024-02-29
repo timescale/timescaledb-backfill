@@ -1,5 +1,6 @@
 use crate::connect::{Source, Target};
 use crate::storage::backfill_schema_exists;
+use crate::timescale::fetch_tsdb_version;
 use crate::PanicError;
 use anyhow::{Context, Error, Result};
 use serde::Serialize;
@@ -55,19 +56,6 @@ async fn fetch_pg_version<T: GenericClient>(client: &mut T) -> Result<String> {
         .await?
         .get(0);
     Ok(pg_version)
-}
-
-async fn fetch_tsdb_version<T: GenericClient>(client: &mut T) -> Result<String> {
-    let tx = client.transaction().await?;
-    let tsdb_version = tx
-        .query_one(
-            "select extversion::text from pg_extension where extname = 'timescaledb'",
-            &[],
-        )
-        .await?
-        .get(0);
-    tx.commit().await?;
-    Ok(tsdb_version)
 }
 
 #[derive(Debug, Serialize)]

@@ -67,6 +67,19 @@ pub fn set_query_target_proc_schema(query: &str) -> String {
     query.replace(EXTSCHEMA, schema)
 }
 
+pub async fn fetch_tsdb_version<T: GenericClient>(client: &mut T) -> Result<String> {
+    let tx = client.transaction().await?;
+    let tsdb_version = tx
+        .query_one(
+            "select extversion::text from pg_extension where extname = 'timescaledb'",
+            &[],
+        )
+        .await?
+        .get(0);
+    tx.commit().await?;
+    Ok(tsdb_version)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DimensionRange {
     pub column_name: String,
