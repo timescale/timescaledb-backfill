@@ -2,7 +2,9 @@ use crate::connect::{Source, Target};
 use crate::execute::TOTAL_BYTES_COPIED;
 use crate::logging::setup_logging;
 use crate::task::TaskType;
-use crate::timescale::{initialize_source_proc_schema, initialize_target_proc_schema};
+use crate::timescale::{
+    fetch_tsdb_version, initialize_source_proc_schema, initialize_target_proc_schema,
+};
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -409,6 +411,8 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
     let mut source = Source::connect(&source_config).await?;
     let mut target = Target::connect(&target_config).await?;
 
+    abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
+
     initialize_source_proc_schema(&mut source).await?;
     initialize_target_proc_schema(&target).await?;
 
@@ -427,6 +431,19 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
     Ok(StageResult { staged_tasks })
 }
 
+async fn abort_on_incompatible_timescaledb_versions(
+    source: &mut Source,
+    target: &mut Target,
+) -> Result<()> {
+    let source_version = fetch_tsdb_version(&mut source.client).await?;
+    let target_version = fetch_tsdb_version(&mut target.client).await?;
+
+    if source_version != target_version {
+        bail!("timescaledb extension version is different in source and target: source={source_version}, target={target_version}");
+    }
+    Ok(())
+}
+
 async fn copy(config: &CopyConfig) -> Result<CopyResult> {
     let source_config = connection_config(&config.source)?;
     let target_config = connection_config(&config.target)?;
@@ -434,14 +451,12 @@ async fn copy(config: &CopyConfig) -> Result<CopyResult> {
     // Enclose DB clients in a new block to ensure they go out of scope
     // as soon as possible. This helps to drop the database connections
     // promptly.
-    {
+    let task_count = {
         let mut source = Source::connect(&source_config).await?;
         initialize_source_proc_schema(&mut source).await?;
-    }
-
-    let task_count = {
-        let target = Target::connect(&target_config).await?;
+        let mut target = Target::connect(&target_config).await?;
         initialize_target_proc_schema(&target).await?;
+        abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
         task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
     };
 
