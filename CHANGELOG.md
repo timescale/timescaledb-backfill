@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.9.0](https://github.com/timescale/timescaledb-backfill/compare/v0.8.0...v0.9.0) (2024-03-12)
+
+
+### Features
+
+* abort on mismatching timescaledb versions ([4b17bba](https://github.com/timescale/timescaledb-backfill/commit/4b17bba61407d2d287bf12c2691c071d5c87efbf))
+* report telemetry to new telemetry backend ([c187cef](https://github.com/timescale/timescaledb-backfill/commit/c187cef1983d1ea198c2c519f9fd977c4671270f))
+* validate hypertables schemas match ([78f9645](https://github.com/timescale/timescaledb-backfill/commit/78f9645ac2ea32d62e2361e975df49e6e6b18882))
+
+
+### Bug Fixes
+
+* copy partial chunks without modifying _timescaledb_catalog.chunk ([e41791b](https://github.com/timescale/timescaledb-backfill/commit/e41791be0340e2d05cde9bef856b4ce49f557ded)), closes [#149](https://github.com/timescale/timescaledb-backfill/issues/149)
+
+
+### Miscellaneous
+
+* abort on timescaledb &gt;= 2.14.0 ([0215503](https://github.com/timescale/timescaledb-backfill/commit/021550394fe628887f3bc51119a608f13f5b2078))
+* checkout dependencies with org automation token ([64a4df9](https://github.com/timescale/timescaledb-backfill/commit/64a4df9d581c7b48358da38e0d3d2ccc54430fa4))
+* clean up test-common ([0486d5e](https://github.com/timescale/timescaledb-backfill/commit/0486d5e02a988de380c7b70f260e5f964f40971e))
+* configure cloud-like environment for tests ([94f1a51](https://github.com/timescale/timescaledb-backfill/commit/94f1a511cebfe124959c32bb77e9037d1c7e6f52))
+* **deps:** bump rustix from 0.38.14 to 0.38.19 ([9dc0bc9](https://github.com/timescale/timescaledb-backfill/commit/9dc0bc9148b4b9c32e844cefaebb312a6e4a1070))
+* disable timescaledb telemetry in tests ([c359bad](https://github.com/timescale/timescaledb-backfill/commit/c359badf7034f5d9750cf41b44929339336c6754))
+* drop PG 12 tests ([ee6e5bc](https://github.com/timescale/timescaledb-backfill/commit/ee6e5bc0a8b0d35cabb3ae3140fe995adde25a15))
+* hide pg_dump output from test logs ([76627ae](https://github.com/timescale/timescaledb-backfill/commit/76627aee5913f922c1d6a6a674c863745aa68ebe))
+* switch to timescale/test-common ([e5fe399](https://github.com/timescale/timescaledb-backfill/commit/e5fe399123c9381b1c2921533f4444ddea78a727))
+
 ## [0.8.0](https://github.com/timescale/timescaledb-backfill/compare/v0.7.0...v0.8.0) (2023-10-05)
 
 
