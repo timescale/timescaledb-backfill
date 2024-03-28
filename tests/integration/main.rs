@@ -141,6 +141,48 @@ static CREATE_OTHER_HIERARCHICAL_CONTINUOUS_AGGREGATE: &str = r"
     GROUP BY time_bucket('2 day', time), device_id;
 ";
 
+static CREATE_CUSTOM_TYPE: &str = r"
+    CREATE TYPE cust_jsonb;
+
+    CREATE OR REPLACE FUNCTION cust_jsonb_in(cstring)
+    RETURNS cust_jsonb
+    LANGUAGE internal
+    IMMUTABLE PARALLEL SAFE STRICT
+    AS $function$jsonb_in$function$;
+
+    CREATE OR REPLACE FUNCTION cust_jsonb_out(cust_jsonb)
+    RETURNS cstring
+    LANGUAGE internal
+    IMMUTABLE PARALLEL SAFE STRICT
+    AS $function$jsonb_out$function$;
+
+    CREATE OR REPLACE FUNCTION cust_jsonb_send(cust_jsonb)
+    RETURNS bytea
+    LANGUAGE internal
+    IMMUTABLE PARALLEL SAFE STRICT
+    AS $function$jsonb_send$function$;
+
+    CREATE OR REPLACE FUNCTION cust_jsonb_recv(internal)
+    RETURNS cust_jsonb
+    LANGUAGE internal
+    IMMUTABLE PARALLEL SAFE STRICT
+    AS $function$jsonb_recv$function$;
+
+    CREATE OR REPLACE FUNCTION cust_jsonb_subscript_handler(internal)
+    RETURNS internal
+    LANGUAGE internal
+    IMMUTABLE PARALLEL SAFE STRICT
+    AS $f$jsonb_subscript_handler$f$;
+
+    CREATE TYPE cust_jsonb (
+        INPUT = cust_jsonb_in,
+        OUTPUT = cust_jsonb_out,
+        SEND = cust_jsonb_send,
+        RECEIVE = cust_jsonb_recv,
+        SUBSCRIPT = cust_jsonb_subscript_handler
+    );
+";
+
 #[derive(Debug, Eq, PartialEq)]
 enum CascadeMode {
     None,
@@ -313,12 +355,10 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
-    configure_cloud_setup(&target_container)?;
+    // configure_cloud_setup(&target_container)?;
 
     let conn_tsdbadmin = target_container
-        .connection_string()
-        .user("tsdbadmin")
-        .dbname("tsdb");
+        .connection_string();
 
     for sql in test_case.setup_sql {
         psql(&source_container, sql)?;
@@ -1388,6 +1428,41 @@ generate_tests!(
                     ]);
             }),
             filter: Some(Filter::new("^other\\.hcagg$", CascadeMode::Up)),
+        }
+    ),
+    (
+        validate_works_with_custom_datatype,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(CREATE_CUSTOM_TYPE),
+                PsqlInput::Sql("ALTER TABLE metrics ADD COLUMN meta cust_jsonb DEFAULT NULL"),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![
+                PsqlInput::Sql("DROP TABLE metrics CASCADE;"),
+                PsqlInput::Sql("DROP TYPE cust_jsonb CASCADE;"),
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql(CREATE_CUSTOM_TYPE),
+                PsqlInput::Sql("ALTER TABLE metrics ADD COLUMN meta cust_jsonb DEFAULT NULL"),
+            ],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in [source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5);
+                }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
+            }),
+            filter: None,
         }
     ),
 );
