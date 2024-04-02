@@ -735,9 +735,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.3.22"
+version = "0.3.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d6250322ef6e60f93f9a2162799302cd6f68f79f6e5d85c8c16f14d1d958178"
+checksum = "4fbd2820c5e49886948654ab546d0688ff24530286bdcf8fca3cefb16d4618eb"
 dependencies = [
  "bytes",
  "fnv",
@@ -1006,9 +1006,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.148"
+version = "0.2.153"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdc71e17332e86d2e1d38c1f99edcb6288ee11b815fb1a4b049eaa2114d369b"
+checksum = "9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd"
 
 [[package]]
 name = "linux-raw-sys"
@@ -1074,9 +1074,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "0.8.8"
+version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "927a765cd3fc26206e66b296465fa9d3e5ab003e651c1b3c060e7956d96b19d2"
+checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
 dependencies = [
  "libc",
  "wasi",
@@ -1938,8 +1938,8 @@ checksum = "8f13fc301d415a8cd4529ba679720c59f07369bcff573618a6e8d5afebefb6f3"
 
 [[package]]
 name = "telemetry-client"
-version = "0.1.1"
-source = "git+ssh://git@github.com/timescale/telemetry-client.git?rev=v0.1.1#67481cc1260820ee56c26ca70c7b4be4c4b04c05"
+version = "0.1.2"
+source = "git+ssh://git@github.com/timescale/telemetry-client.git?rev=v0.1.2#e26a2cbfaa7bf89298e90eed234be8194cbd0b75"
 dependencies = [
  "reqwest",
  "serde",
@@ -1977,8 +1977,8 @@ checksum = "3369f5ac52d5eb6ab48c6b4ffdc8efbcad6b89c765749064ba298f2c68a16a76"
 
 [[package]]
 name = "test-common"
-version = "0.10.0"
-source = "git+ssh://git@github.com/timescale/test-common.git?rev=v0.10.0#daefa5185c73d40a464be1860f8411c20549d137"
+version = "0.13.1"
+source = "git+ssh://git@github.com/timescale/test-common.git?rev=v0.13.1#01d03d1d01e25142a1894d7be6243d799ef8d9fd"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -2313,9 +2313,9 @@ checksum = "e51733f11c9c4f72aa0c160008246859e340b00807569a0da0e7a1079b27ba85"
 
 [[package]]
 name = "unsafe-libyaml"
-version = "0.2.9"
+version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f28467d3e1d3c6586d8f25fa243f544f5800fec42d97032474e17222c2b75cfa"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
