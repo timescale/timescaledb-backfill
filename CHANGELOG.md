@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1](https://github.com/timescale/timescaledb-backfill/compare/v0.9.0...v0.9.1) (2024-04-02)
+
+
+### Bug Fixes
+
+* column mismatch error due to ordinal position ([7570bde](https://github.com/timescale/timescaledb-backfill/commit/7570bde1546947e7062c0e13482428ad05e878b1))
+
+
+### Miscellaneous
+
+* bump deps ([6d8c2b3](https://github.com/timescale/timescaledb-backfill/commit/6d8c2b38a1de42c8e948672716e16b955a4abab0))
+
 ## [0.9.0](https://github.com/timescale/timescaledb-backfill/compare/v0.8.0...v0.9.0) (2024-03-12)
 
 
