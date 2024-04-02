@@ -424,6 +424,35 @@ generate_tests!(
         }
     ),
     (
+        copy_data_from_chunks_different_column_ordinal,
+        TestCase {
+            setup_sql: vec![
+                PsqlInput::Sql(SETUP_HYPERTABLE),
+                PsqlInput::Sql("ALTER TABLE public.metrics DROP COLUMN val"),
+                PsqlInput::Sql("ALTER TABLE public.metrics ADD COLUMN val FLOAT8"),
+                PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+            ],
+            completion_time: "2023-06-01T00:00:00",
+            starting_time: None,
+            post_skeleton_source_sql: vec![],
+            post_skeleton_target_sql: vec![],
+            asserts: Box::new(|source: &mut DbAssert, target: &mut DbAssert| {
+                for dbassert in [source, target] {
+                    dbassert
+                        .has_table_count("public", "metrics", 744)
+                        .has_chunk_count("public", "metrics", 5);
+                }
+                let tasks = 5;
+                target.has_telemetry(vec![
+                    assert_stage_telemetry(tasks),
+                    assert_copy_telemetry(tasks),
+                    assert_verify_telemetry(tasks, 0),
+                ]);
+            }),
+            filter: None,
+        }
+    ),
+    (
         copy_data_from_chunks_with_from_flag,
         TestCase {
             setup_sql: vec![

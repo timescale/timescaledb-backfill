@@ -323,7 +323,6 @@ SELECT
   table_name,
   JSON_AGG(
     JSON_BUILD_OBJECT (
-      'ordinal_position', ordinal_position,
       'column_name', column_name,
       'data_type', data_type,
       'udt_schema', udt_schema,
@@ -364,7 +363,6 @@ WITH
       table_name,
       JSONB_AGG(
         JSONB_BUILD_OBJECT(
-          'ordinal_position', ordinal_position,
           'column_name', column_name,
           'data_type', data_type,
           'udt_schema', udt_schema,
@@ -394,8 +392,6 @@ SELECT
           elements ->> 'udt_name'
         ),
         ', '
-        ORDER BY
-          (elements ->> 'ordinal_position')::int
       )
     FROM
       jsonb_array_elements(source.columns) AS elements
@@ -411,8 +407,6 @@ SELECT
           elements ->> 'udt_name'
         ),
         ', '
-        ORDER BY
-          (elements ->> 'ordinal_position')::int
       )
     FROM
       jsonb_array_elements(target.columns) AS elements
