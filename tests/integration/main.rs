@@ -192,11 +192,11 @@ fn external_version() -> Option<PgVersion> {
 }
 
 fn pg_version() -> PgVersion {
-    external_version().unwrap_or(PgVersion::PG15)
+    external_version().unwrap_or(PgVersion::PG16)
 }
 
 #[allow(dead_code)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum TsVersion {
     TS210,
     TS211,
@@ -234,7 +234,7 @@ fn ts_version() -> TsVersion {
     env::var("BF_TEST_TS_VERSION")
         .ok()
         .map(TsVersion::from)
-        .unwrap_or(TS213)
+        .unwrap_or(TS214)
 }
 
 fn timescaledb(pg_version: PgVersion, ts_version: TsVersion) -> GenericImage {
@@ -1589,102 +1589,13 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 }
 
 #[test]
-fn abort_on_timescaledb_ge_214() -> Result<()> {
-    let _ = pretty_env_logger::try_init();
-
-    let docker = Cli::default();
-
-    let source_container = docker.run(timescaledb(pg_version(), TS214));
-    let target_container = docker.run(timescaledb(pg_version(), TS214));
-
-    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
-    psql(
-        &source_container,
-        PsqlInput::Sql(
-            r"
-            INSERT INTO metrics (time, device_id, val)
-            SELECT time, device_id, random()
-            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
-            CROSS JOIN generate_series(1, 10) device_id;
-        ",
-        ),
-    )?;
-
-    run_backfill(TestConfigStage::new(
-        &source_container,
-        &target_container,
-        "2023-05-10T23:59:00Z",
-    ))
-    .unwrap()
-    .assert()
-    .failure()
-    .stderr(contains(
-        "timescaledb-backfill does not yet support timescaledb >= 2.14.0",
-    ));
-
-    run_backfill(TestConfigCopy::new(&source_container, &target_container))
-        .unwrap()
-        .assert()
-        .failure()
-        .stderr(contains(
-            "timescaledb-backfill does not yet support timescaledb >= 2.14.0",
-        ));
-
-    Ok(())
-}
-
-#[test]
-fn override_abort_on_timescaledb_ge_214() -> Result<()> {
-    let _ = pretty_env_logger::try_init();
-
-    let docker = Cli::default();
-
-    let source_container = docker.run(timescaledb(pg_version(), TS214));
-    let target_container = docker.run(timescaledb(pg_version(), TS214));
-
-    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
-    psql(
-        &source_container,
-        PsqlInput::Sql(
-            r"
-            INSERT INTO metrics (time, device_id, val)
-            SELECT time, device_id, random()
-            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
-            CROSS JOIN generate_series(1, 10) device_id;
-        ",
-        ),
-    )?;
-
-    copy_skeleton_schema(&source_container, &target_container)?;
-
-    run_backfill(
-        TestConfigStage::new(&source_container, &target_container, "2023-05-10T23:59:00Z")
-            .ignore_tsdb_214_compatibility(),
-    )
-    .unwrap()
-    .assert()
-    .success()
-    .stdout(contains("ignoring timescaledb version >= 2.14.0"));
-
-    run_backfill(
-        TestConfigCopy::new(&source_container, &target_container).ignore_tsdb_214_compatibility(),
-    )
-    .unwrap()
-    .assert()
-    .success()
-    .stdout(contains("ignoring timescaledb version >= 2.14.0"));
-
-    Ok(())
-}
-
-#[test]
 fn abort_on_mismatching_timescaledb_version() -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version(), TS212));
-    let target_container = docker.run(timescaledb(pg_version(), TS213));
+    let source_container = docker.run(timescaledb(pg_version(), TS213));
+    let target_container = docker.run(timescaledb(pg_version(), TS214));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
@@ -2911,3 +2822,82 @@ generate_validate_tests!(
         }
     ),
 );
+
+#[test]
+fn panic_copy_source_has_compressed_chunk_not_present_in_target_with_different_compression_settings(
+) -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    if ts_version() < TS214 {
+        println!("test skipped");
+        return Ok(());
+    }
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    configure_cloud_setup(&target_container)?;
+
+    let conn_tsdbadmin = target_container
+        .connection_string()
+        .user("tsdbadmin")
+        .dbname("tsdb");
+
+    // Given a hypertable with compression enable.
+    let setup_sql = vec![
+        PsqlInput::Sql(SETUP_HYPERTABLE),
+        PsqlInput::Sql("ALTER TABLE metrics ADD COLUMN label TEXT DEFAULT 'my-label';"),
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+        PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+        PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+    ];
+    for sql in setup_sql {
+        psql(&source_container, sql)?;
+    }
+
+    // And the skeleton copied over.
+    copy_skeleton_schema(&source_container, &conn_tsdbadmin)?;
+
+    let post_skeleton_source_sql = vec![
+        // If after the skeleton is copied over, the compression settings
+        // change only in source.
+        PsqlInput::Sql(
+            "ALTER TABLE metrics SET (timescaledb.compress, timescaledb.compress_segmentby='device_id,label')"
+        ),
+        // And a new compressed chunk to be backfilled is created in source
+        // with the new compression settings.
+        PsqlInput::Sql(COMPRESS_ONE_CHUNK),
+    ];
+    for sql in post_skeleton_source_sql {
+        psql(&source_container, sql)?;
+    }
+
+    let stage_config =
+        TestConfigStage::new(&source_container, &conn_tsdbadmin, "2023-07-01T00:00:00");
+
+    run_backfill(stage_config).unwrap().assert().success();
+
+    // When running the copy the operation.
+    let result = run_backfill(TestConfigCopy::new(&source_container, &conn_tsdbadmin))
+        .unwrap()
+        .assert()
+        .failure();
+
+    // Then an error will be raised because the backfill tool needs to create
+    // the new compressed chunk, but the compression settings for the
+    // hypertable in target are different than the chunk's compression settings
+    // in the source.
+    result.stderr(
+        contains(
+            "1: Compression settings mismatch."
+        ).and(contains(
+            "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk' in source are different than the settings for the hypertable 'public.metrics' in target:"
+        )).and(contains(
+            r#"- SOURCE: CompressionSettings { segmentby: ["device_id", "label"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#
+        )).and(contains(
+            r#"- TARGET: CompressionSettings { segmentby: ["device_id"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#
+        )));
+
+    Ok(())
+}

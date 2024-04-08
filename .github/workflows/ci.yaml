@@ -86,8 +86,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgversion: [13, 14, 15]
-        tsversion: [2.13]
+        pgversion: [13, 14, 15, 16]
+        tsversion: [2.13, 2.14]
 
     runs-on: ubuntu-latest
     steps:
@@ -115,7 +115,7 @@ jobs:
 
       # This is required for the integration tests. If we move them to their
       # own action we can remove it.
-      - name: Install PG15
+      - name: Install PG16
         run: |
           sudo apt-get --purge remove postgresql-14 postgresql-client-14 -y
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'

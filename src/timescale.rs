@@ -10,6 +10,7 @@ use tokio_postgres::GenericClient;
 
 static SOURCE_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
 static TARGET_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
+static PER_CHUNK_COMPRESSION_SETTINGS: OnceLock<bool> = OnceLock::new();
 static EXTSCHEMA: &str = "@extschema@";
 static FUNCTIONS_SCHEMA: &str = "_timescaledb_functions";
 static INTERNAL_SCHEMA: &str = "_timescaledb_internal";
@@ -28,6 +29,13 @@ pub async fn initialize_target_proc_schema(target: &Target) -> Result<()> {
     TARGET_PROC_SCHEMA
         .set(schema)
         .map_err(|e| anyhow!("target proc schema already set to {}", e))?;
+    Ok(())
+}
+
+pub fn initialize_timescale_features(ge_214: bool) -> Result<()> {
+    PER_CHUNK_COMPRESSION_SETTINGS
+        .set(ge_214)
+        .map_err(|e| anyhow!("PER_CHUNK_COMPRESSION_SETTINGS already set to {}", e))?;
     Ok(())
 }
 
@@ -152,6 +160,7 @@ impl QuotedName for Chunk {
 pub type SourceCompressedChunk = CompressedChunk;
 pub type TargetCompressedChunk = CompressedChunk;
 
+#[derive(Debug)]
 pub struct CompressedChunk {
     pub schema: String,
     pub table: String,
@@ -173,4 +182,10 @@ pub struct CompressionSize {
     pub compressed_index_size: i64,
     pub numrows_pre_compression: i64,
     pub numrows_post_compression: i64,
+}
+
+pub fn per_chunk_compression_supported() -> bool {
+    *PER_CHUNK_COMPRESSION_SETTINGS
+        .get()
+        .expect("PER_CHUNK_COMPRESSION_SETTINGS is not set")
 }
