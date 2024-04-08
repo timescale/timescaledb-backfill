@@ -43,6 +43,7 @@ pub struct TestConfigCopy {
     target: TestConnectionString,
     parallelism: u16,
     envs: Vec<(String, String)>,
+    ignore_tsdb_214_compatibility: Option<bool>,
 }
 
 impl TestConfigCopy {
@@ -55,6 +56,7 @@ impl TestConfigCopy {
             target: target.connection_string(),
             parallelism: 8,
             envs: vec![],
+            ignore_tsdb_214_compatibility: None,
         }
     }
 
@@ -71,18 +73,31 @@ impl TestConfigCopy {
             ..self.clone()
         }
     }
+
+    pub fn ignore_tsdb_214_compatibility(&mut self) -> Self {
+        Self {
+            ignore_tsdb_214_compatibility: Some(true),
+            ..self.clone()
+        }
+    }
 }
 
 impl TestConfig for TestConfigCopy {
     fn args(&self) -> Vec<OsString> {
-        vec![
+        let mut args = vec![
             OsString::from("--source"),
             OsString::from(self.source.as_str()),
             OsString::from("--target"),
             OsString::from(self.target.as_str()),
             OsString::from("--parallelism"),
             OsString::from(self.parallelism.to_string()),
-        ]
+        ];
+
+        if self.ignore_tsdb_214_compatibility.is_some_and(|b| b) {
+            args.extend_from_slice(&[OsString::from("--ignore-tsdb-214-compatibility")])
+        }
+
+        args
     }
 
     fn action(&self) -> &str {
@@ -151,6 +166,7 @@ pub struct TestConfigStage {
     filter: Option<String>,
     cascade_up: Option<bool>,
     cascade_down: Option<bool>,
+    ignore_tsdb_214_compatibility: Option<bool>,
 }
 
 impl TestConfigStage {
@@ -167,6 +183,7 @@ impl TestConfigStage {
             filter: None,
             cascade_up: None,
             cascade_down: None,
+            ignore_tsdb_214_compatibility: None,
         }
     }
 
@@ -197,6 +214,13 @@ impl TestConfigStage {
             ..self.clone()
         }
     }
+
+    pub fn ignore_tsdb_214_compatibility(&mut self) -> Self {
+        Self {
+            ignore_tsdb_214_compatibility: Some(true),
+            ..self.clone()
+        }
+    }
 }
 
 impl TestConfig for TestConfigStage {
@@ -222,6 +246,10 @@ impl TestConfig for TestConfigStage {
 
         if let Some(from) = self.from.as_ref() {
             args.extend_from_slice(&[OsString::from("--from"), OsString::from(from)])
+        }
+
+        if self.ignore_tsdb_214_compatibility.is_some_and(|b| b) {
+            args.extend_from_slice(&[OsString::from("--ignore-tsdb-214-compatibility")])
         }
 
         args
