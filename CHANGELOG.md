@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/timescale/timescaledb-backfill/compare/v0.9.1...v0.10.0) (2024-04-08)
+
+
+### Features
+
+* allow ignoring 2.14 compatibility check ([b7fe23b](https://github.com/timescale/timescaledb-backfill/commit/b7fe23b153f4fe93b10694ba6f0498eac2806efb))
+
 ## [0.9.1](https://github.com/timescale/timescaledb-backfill/compare/v0.9.0...v0.9.1) (2024-04-02)
 
 
