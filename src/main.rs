@@ -24,7 +24,7 @@ use telemetry::{report, Telemetry};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{Duration, Instant};
 use tokio_postgres::Config;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 use verify::FAILED_VERIFICATIONS;
 
 mod caggs;
@@ -136,6 +136,10 @@ pub struct StageConfig {
     /// A postgres snapshot exported from source to use when copying.
     #[arg(short, long)]
     snapshot: Option<String>,
+
+    /// Ignore the fact that this tool is not compatible with TimescaleDB 2.14.
+    #[arg(long, default_value_t = false)]
+    ignore_tsdb_214_compatibility: bool,
 }
 
 #[derive(Args, Debug)]
@@ -151,6 +155,10 @@ pub struct CopyConfig {
     /// Parallelism for copy.
     #[arg(short, long, default_value_t = 8)]
     parallelism: u8,
+
+    /// Ignore the fact that this tool is not compatible with TimescaleDB 2.14.
+    #[arg(long, default_value_t = false)]
+    ignore_tsdb_214_compatibility: bool,
 }
 
 #[derive(Args, Debug)]
@@ -412,7 +420,12 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
     let mut source = Source::connect(&source_config).await?;
     let mut target = Target::connect(&target_config).await?;
 
-    abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
+    abort_on_incompatible_timescaledb_versions(
+        &mut source,
+        &mut target,
+        config.ignore_tsdb_214_compatibility,
+    )
+    .await?;
 
     initialize_source_proc_schema(&mut source).await?;
     initialize_target_proc_schema(&target).await?;
@@ -435,23 +448,28 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
 async fn abort_on_incompatible_timescaledb_versions(
     source: &mut Source,
     target: &mut Target,
+    ignore_214_warning: bool,
 ) -> Result<()> {
     let source_version = fetch_tsdb_version(&mut source.client).await?;
     let target_version = fetch_tsdb_version(&mut target.client).await?;
 
     let ge_214 = VersionReq::parse(">=2.14.0").unwrap();
 
-    if let Ok(v) = Version::parse(&source_version) {
-        if ge_214.matches(&v) {
-            bail!("timescaledb-backfill does not yet support timescaledb >= 2.14.0, source={source_version}")
+    let run_check = |name: &str, version: &str| -> Result<()> {
+        if let Ok(v) = Version::parse(version) {
+            if ge_214.matches(&v) {
+                if ignore_214_warning {
+                    warn!("ignoring timescaledb version >= 2.14.0, {name}={version}")
+                } else {
+                    bail!("timescaledb-backfill does not yet support timescaledb >= 2.14.0, {name}={version}")
+                }
+            }
         }
-    }
+        Ok(())
+    };
 
-    if let Ok(v) = Version::parse(&target_version) {
-        if ge_214.matches(&v) {
-            bail!("timescaledb-backfill does not yet support timescaledb => 2.14.0, target={target_version}")
-        }
-    }
+    run_check("source", &source_version)?;
+    run_check("target", &target_version)?;
 
     if source_version != target_version {
         bail!("timescaledb extension version is different in source and target: source={source_version}, target={target_version}");
@@ -471,7 +489,12 @@ async fn copy(config: &CopyConfig) -> Result<CopyResult> {
         initialize_source_proc_schema(&mut source).await?;
         let mut target = Target::connect(&target_config).await?;
         initialize_target_proc_schema(&target).await?;
-        abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
+        abort_on_incompatible_timescaledb_versions(
+            &mut source,
+            &mut target,
+            config.ignore_tsdb_214_compatibility,
+        )
+        .await?;
         task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
     };
 

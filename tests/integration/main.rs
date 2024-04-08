@@ -1634,6 +1634,50 @@ fn abort_on_timescaledb_ge_214() -> Result<()> {
 }
 
 #[test]
+fn override_abort_on_timescaledb_ge_214() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), TS214));
+    let target_container = docker.run(timescaledb(pg_version(), TS214));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            r"
+            INSERT INTO metrics (time, device_id, val)
+            SELECT time, device_id, random()
+            FROM generate_series('2023-05-04T00:00:00Z'::timestamptz, '2023-05-10T23:59:00Z'::timestamptz, '1 minute'::interval) time
+            CROSS JOIN generate_series(1, 10) device_id;
+        ",
+        ),
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    run_backfill(
+        TestConfigStage::new(&source_container, &target_container, "2023-05-10T23:59:00Z")
+            .ignore_tsdb_214_compatibility(),
+    )
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("ignoring timescaledb version >= 2.14.0"));
+
+    run_backfill(
+        TestConfigCopy::new(&source_container, &target_container).ignore_tsdb_214_compatibility(),
+    )
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("ignoring timescaledb version >= 2.14.0"));
+
+    Ok(())
+}
+
+#[test]
 fn abort_on_mismatching_timescaledb_version() -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
