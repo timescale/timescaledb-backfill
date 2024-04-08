@@ -46,5 +46,5 @@ pretty_env_logger = "0.5.0"
 reqwest = "0.11.22"
 tap-reader = "1.0.1"
 testcontainers = "0.14.0"
-test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.13.1"}
+test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.14.0"}
 strip-ansi-escapes = "0.2.0"
