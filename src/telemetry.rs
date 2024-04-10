@@ -1,4 +1,5 @@
 use crate::connect::{Source, Target};
+use crate::postgres::fetch_pg_version;
 use crate::storage::backfill_schema_exists;
 use crate::timescale::fetch_tsdb_version;
 use crate::PanicError;
@@ -6,7 +7,7 @@ use anyhow::{Context, Error, Result};
 use serde::Serialize;
 use telemetry_client::{DbUuid, Telemetry as TimescaleTelemetry, TelemetryClient};
 use tokio::time::Duration;
-use tokio_postgres::{Client, GenericClient};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
 const METADATA_KEY: &str = "timescaledb-backfill";
@@ -45,19 +46,6 @@ async fn fetch_db_uuid(client: &mut Client) -> Result<Option<String>> {
     }
 }
 
-async fn fetch_pg_version<T: GenericClient>(client: &mut T) -> Result<String> {
-    // We replicate the same way TimescaleDB does for determining Postgres version.
-    // https://github.com/timescale/timescaledb/blob/fb65086b5542a871dc3d9757724e886dca904ef6/src/telemetry/telemetry.c#L552-L574
-    let pg_version = client
-        .query_one(
-            "SELECT (current_setting('server_version_num')::int/10000 || '.' || current_setting('server_version_num')::int%100)::text;",
-            &[],
-        )
-        .await?
-        .get(0);
-    Ok(pg_version)
-}
-
 #[derive(Debug, Serialize)]
 pub struct Telemetry {
     session_id: Option<Uuid>,
@@ -89,8 +77,8 @@ impl Telemetry {
     pub async fn from_target_session(target: &mut Target) -> Result<Self> {
         let session = fetch_session(target).await?;
         let target_db_uuid = fetch_db_uuid(&mut target.client).await?;
-        let target_db_pg_version = fetch_pg_version(&mut target.client).await.ok();
-        let target_db_tsdb_version = fetch_tsdb_version(&mut target.client).await.ok();
+        let target_db_pg_version = fetch_pg_version(&target.client).await.ok();
+        let target_db_tsdb_version = fetch_tsdb_version(&target.client).await.ok();
         Ok(Self {
             session_id: session.as_ref().map(|s| s.id),
             session_created_at: session.map(|s| s.created_at),
@@ -117,8 +105,8 @@ impl Telemetry {
     }
 
     pub async fn with_source_db(self, source: &mut Source) -> Telemetry {
-        let pg_version = fetch_pg_version(&mut source.client).await;
-        let tsdb_version = fetch_tsdb_version(&mut source.client).await;
+        let pg_version = fetch_pg_version(&source.client).await;
+        let tsdb_version = fetch_tsdb_version(&source.client).await;
         let db_uuid = fetch_db_uuid(&mut source.client).await.ok().flatten();
 
         Telemetry {

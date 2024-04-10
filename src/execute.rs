@@ -1,9 +1,10 @@
 use crate::execute::CopyMode::UncompressedOnly;
+use crate::features;
 use crate::sql::quote_table_name;
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
-    self, set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, Hypertable,
-    QuotedName, SourceChunk, SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
+    set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, Hypertable, QuotedName,
+    SourceChunk, SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
@@ -584,7 +585,7 @@ async fn create_compressed_chunk_data_table(
 ) -> Result<TargetCompressedChunk> {
     let table = add_backfill_prefix(target_tx, &source_compressed_chunk.table).await?;
     let data_table_name = quote_table_name(&source_compressed_chunk.schema, &table);
-    let query = if timescale::per_chunk_compression_supported() {
+    if features::per_chunk_compression() {
         assert_per_chunk_compression_settings_match(
             source_tx,
             target_tx,
@@ -592,28 +593,43 @@ async fn create_compressed_chunk_data_table(
             &uncompressed_chunk.hypertable,
         )
         .await?;
-        create_compressed_chunk_data_table_query_from_source_chunk(
-            source_tx,
+        let (query, compressed_columns, uncompressed_columns) =
+            create_compressed_chunk_data_table_query_from_source_chunk(
+                source_tx,
+                &data_table_name,
+                source_compressed_chunk,
+            )
+            .await?;
+        trace!(
+            "Creating compressed chunk data table {} as `{}`",
             &data_table_name,
-            source_compressed_chunk,
+            query
+        );
+
+        target_tx.execute(&query, &[]).await?;
+        set_compress_chunk_statistics(
+            target_tx,
+            compressed_columns,
+            uncompressed_columns,
+            &data_table_name,
         )
-        .await?
+        .await?;
     } else {
-        create_compressed_chunk_data_table_query_from_parent(
+        let query = create_compressed_chunk_data_table_query_from_parent(
             target_tx,
             uncompressed_chunk,
             &data_table_name,
         )
-        .await?
-    };
+        .await?;
 
-    trace!(
-        "Creating compressed chunk data table {} as `{}`",
-        &data_table_name,
-        query
-    );
+        trace!(
+            "Creating compressed chunk data table {} as `{}`",
+            &data_table_name,
+            query
+        );
 
-    target_tx.execute(&query, &[]).await?;
+        target_tx.execute(&query, &[]).await?;
+    }
 
     Ok(TargetCompressedChunk {
         schema: source_compressed_chunk.schema.clone(),
@@ -899,7 +915,7 @@ async fn create_compressed_chunk_data_table_query_from_source_chunk(
     source_tx: &Transaction<'_>,
     data_table_name: &str,
     source_chunk: &CompressedChunk,
-) -> Result<String> {
+) -> Result<(String, Vec<String>, Vec<String>)> {
     let columns_query: &str = r"
 SELECT
   column_name, udt_schema, udt_name, character_maximum_length,
@@ -926,6 +942,8 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 
     // Generate the CREATE TABLE query statement
     let mut create_table_query = format!("CREATE TABLE {} (", data_table_name);
+    let mut compressed_columns: Vec<String> = vec![];
+    let mut uncompressed_columns: Vec<String> = vec![];
     for (i, row) in rows.iter().enumerate() {
         let column_name: &str = row.get(0);
         let udt_schema: &str = row.get(1);
@@ -939,12 +957,18 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 
         create_table_query.push_str(&format!("{} {}.{}", column_name, udt_schema, udt_name));
 
+        if udt_schema == "_timescaledb_internal" && udt_name == "compressed_data" {
+            compressed_columns.push(String::from(column_name));
+        } else {
+            uncompressed_columns.push(String::from(column_name));
+        }
+
         // Add character maximum length if applicable
         if let Some(max_length) = character_max_length {
             create_table_query.push_str(&format!("({})", max_length));
         }
 
-        if !attstorage.is_empty() {
+        if features::storage_type_in_create_table() && !attstorage.is_empty() {
             create_table_query.push_str(&format!(" STORAGE {}", attstorage));
         }
 
@@ -976,7 +1000,38 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
         }
     }
 
-    create_table_query.push(')');
+    create_table_query.push_str(") WITH (toast_tuple_target = 128)");
 
-    Ok(create_table_query)
+    Ok((create_table_query, compressed_columns, uncompressed_columns))
+}
+
+async fn set_compress_chunk_statistics(
+    target_tx: &Transaction<'_>,
+    compressed_columns: Vec<String>,
+    uncompressed_columns: Vec<String>,
+    data_table_name: &str,
+) -> Result<()> {
+    for compressed_column in compressed_columns.iter() {
+        target_tx
+            .execute(
+                &format!(
+                    "ALTER TABLE {} ALTER COLUMN {} SET STATISTICS 0",
+                    data_table_name, compressed_column
+                ),
+                &[],
+            )
+            .await?;
+    }
+    for uncompressed_column in uncompressed_columns.iter() {
+        target_tx
+            .execute(
+                &format!(
+                    "ALTER TABLE {} ALTER COLUMN {} SET STATISTICS 1000",
+                    data_table_name, uncompressed_column
+                ),
+                &[],
+            )
+            .await?;
+    }
+    Ok(())
 }
