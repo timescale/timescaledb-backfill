@@ -2222,6 +2222,30 @@ Verifed 1 chunks in"#;
     Ok(())
 }
 
+#[test]
+fn refresh_caggs_with_no_cagg() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    // Given a chunk that's staged and copied
+    stage_and_copy_a_single_chunk(&source_container, &target_container)?;
+
+    run_backfill(TestConfigRefreshCaggs::new(
+        &source_container,
+        &target_container,
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains("No continuous aggregates to refresh"));
+
+    Ok(())
+}
+
 macro_rules! generate_refresh_caggs_tests {
     ($(($func:ident, $testcase:expr),)*) => {
         $(
