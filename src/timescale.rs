@@ -10,7 +10,6 @@ use tokio_postgres::GenericClient;
 
 static SOURCE_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
 static TARGET_PROC_SCHEMA: OnceLock<String> = OnceLock::new();
-static PER_CHUNK_COMPRESSION_SETTINGS: OnceLock<bool> = OnceLock::new();
 static EXTSCHEMA: &str = "@extschema@";
 static FUNCTIONS_SCHEMA: &str = "_timescaledb_functions";
 static INTERNAL_SCHEMA: &str = "_timescaledb_internal";
@@ -29,13 +28,6 @@ pub async fn initialize_target_proc_schema(target: &Target) -> Result<()> {
     TARGET_PROC_SCHEMA
         .set(schema)
         .map_err(|e| anyhow!("target proc schema already set to {}", e))?;
-    Ok(())
-}
-
-pub fn initialize_timescale_features(ge_214: bool) -> Result<()> {
-    PER_CHUNK_COMPRESSION_SETTINGS
-        .set(ge_214)
-        .map_err(|e| anyhow!("PER_CHUNK_COMPRESSION_SETTINGS already set to {}", e))?;
     Ok(())
 }
 
@@ -75,16 +67,14 @@ pub fn set_query_target_proc_schema(query: &str) -> String {
     query.replace(EXTSCHEMA, schema)
 }
 
-pub async fn fetch_tsdb_version<T: GenericClient>(client: &mut T) -> Result<String> {
-    let tx = client.transaction().await?;
-    let tsdb_version = tx
+pub async fn fetch_tsdb_version<T: GenericClient>(client: &T) -> Result<String> {
+    let tsdb_version = client
         .query_one(
             "select extversion::text from pg_extension where extname = 'timescaledb'",
             &[],
         )
         .await?
         .get(0);
-    tx.commit().await?;
     Ok(tsdb_version)
 }
 
@@ -182,10 +172,4 @@ pub struct CompressionSize {
     pub compressed_index_size: i64,
     pub numrows_pre_compression: i64,
     pub numrows_post_compression: i64,
-}
-
-pub fn per_chunk_compression_supported() -> bool {
-    *PER_CHUNK_COMPRESSION_SETTINGS
-        .get()
-        .expect("PER_CHUNK_COMPRESSION_SETTINGS is not set")
 }

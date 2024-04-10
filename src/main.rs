@@ -9,10 +9,10 @@ use crate::workers::{PoolMessage, PROCESSED_COUNT};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use console::Term;
+use features::initialize_features;
 use futures_lite::FutureExt;
 use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
-use semver::{Version, VersionReq};
 use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
@@ -30,7 +30,9 @@ use verify::FAILED_VERIFICATIONS;
 mod caggs;
 mod connect;
 mod execute;
+mod features;
 mod logging;
+mod postgres;
 mod sql;
 mod storage;
 mod task;
@@ -412,8 +414,9 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
     let mut source = Source::connect(&source_config).await?;
     let mut target = Target::connect(&target_config).await?;
 
-    abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
+    abort_on_incompatible_timescaledb_versions(&source, &target).await?;
 
+    initialize_features(&target).await?;
     initialize_source_proc_schema(&mut source).await?;
     initialize_target_proc_schema(&target).await?;
 
@@ -433,21 +436,16 @@ async fn stage(config: &StageConfig) -> Result<StageResult> {
 }
 
 async fn abort_on_incompatible_timescaledb_versions(
-    source: &mut Source,
-    target: &mut Target,
+    source: &Source,
+    target: &Target,
 ) -> Result<()> {
-    let source_version = fetch_tsdb_version(&mut source.client).await?;
-    let target_version = fetch_tsdb_version(&mut target.client).await?;
+    let source_version = fetch_tsdb_version(&source.client).await?;
+    let target_version = fetch_tsdb_version(&target.client).await?;
 
     if source_version != target_version {
         bail!("timescaledb extension version is different in source and target: source={source_version}, target={target_version}");
     }
 
-    let ge_214 = VersionReq::parse(">=2.14.0").unwrap();
-
-    if let Ok(v) = Version::parse(&target_version) {
-        timescale::initialize_timescale_features(ge_214.matches(&v))?;
-    }
     Ok(())
 }
 
@@ -461,9 +459,10 @@ async fn copy(config: &CopyConfig) -> Result<CopyResult> {
     let task_count = {
         let mut source = Source::connect(&source_config).await?;
         initialize_source_proc_schema(&mut source).await?;
-        let mut target = Target::connect(&target_config).await?;
+        let target = Target::connect(&target_config).await?;
         initialize_target_proc_schema(&target).await?;
-        abort_on_incompatible_timescaledb_versions(&mut source, &mut target).await?;
+        initialize_features(&target).await?;
+        abort_on_incompatible_timescaledb_versions(&source, &target).await?;
         task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Copy).await?
     };
 
@@ -507,6 +506,7 @@ async fn verify(config: &VerifyConfig) -> Result<VerifyResult> {
     let task_count = {
         let target = Target::connect(&target_config).await?;
         initialize_target_proc_schema(&target).await?;
+        initialize_features(&target).await?;
         task::get_and_assert_staged_task_count_greater_zero(&target, TaskType::Verify).await?
     };
 
