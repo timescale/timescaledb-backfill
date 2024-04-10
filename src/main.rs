@@ -366,6 +366,12 @@ async fn main() -> Result<()> {
 }
 
 async fn run(args: &CliArgs) -> Result<CommandResult> {
+    TERM.write_line(&format!(
+        "{} v{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    ))?;
+
     match args.command {
         Command::Stage(ref args) => stage(args).await.map(CommandResult::Stage),
         Command::Copy(ref args) => copy(args).await.map(CommandResult::Copy),
