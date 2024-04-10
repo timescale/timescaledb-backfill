@@ -19,6 +19,10 @@ pub(crate) async fn refresh_caggs(
     }
     initialize_target_proc_schema(target).await?;
     let watermarks = get_watermarks(source, filter, cascade_up, cascade_down).await?;
+    if watermarks.is_empty() {
+        println!("No continuous aggregates to refresh");
+        return Ok(0);
+    }
     refresh_up_to_watermarks(target, watermarks).await
 }
 
