@@ -629,6 +629,10 @@ async fn create_compressed_chunk_data_table(
         );
 
         target_tx.execute(&query, &[]).await?;
+        trace!(
+            "Setting statistics for compressed chunk data table {}",
+            &qualified_data_table_name,
+        );
         set_compress_chunk_statistics(
             target_tx,
             compressed_columns,
@@ -636,11 +640,26 @@ async fn create_compressed_chunk_data_table(
             &qualified_data_table_name,
         )
         .await?;
+        trace!(
+            "Creating index for compressed chunk data table {}",
+            &qualified_data_table_name,
+        );
         create_compressed_chunk_index(
             target_tx,
             &qualified_data_table_name,
             &data_table_name,
             &compression_settings,
+        )
+        .await?;
+        trace!(
+            "Cloning constraints from hypertable {} to data table {}",
+            uncompressed_chunk.hypertable.quoted_name(),
+            &qualified_data_table_name,
+        );
+        clone_constraints_to_chunk(
+            target_tx,
+            &uncompressed_chunk.hypertable,
+            &qualified_data_table_name,
         )
         .await?;
     } else {
@@ -1102,5 +1121,31 @@ async fn set_compress_chunk_statistics(
             )
             .await?;
     }
+    Ok(())
+}
+
+// Clone the hypertable's constraints to the compressed chunk data table.
+//
+// Analogous to the extension function:
+// tsl/src/compression/compression_storage.c:clone_constraints_to_chunk
+async fn clone_constraints_to_chunk(
+    target_tx: &Transaction<'_>,
+    hypertable: &Hypertable,
+    qualified_data_table_name: &str,
+) -> Result<()> {
+    let query = &set_query_target_proc_schema(
+        r"
+      SELECT @extschema@.constraint_clone(
+        oid,
+        $2::text::regclass::oid)
+      FROM pg_constraint
+      WHERE conrelid = $1::text::regclass::oid AND contype = 'f'",
+    );
+    target_tx
+        .execute(
+            query,
+            &[&hypertable.quoted_name(), &qualified_data_table_name],
+        )
+        .await?;
     Ok(())
 }
