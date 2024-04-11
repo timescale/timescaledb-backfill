@@ -5,6 +5,7 @@ use crate::config::{
 use crate::TsVersion::{TS210, TS211, TS212, TS213, TS214};
 use anyhow::{bail, Context, Result};
 use assert_cmd::prelude::*;
+use diffy::{create_patch, PatchFormatter};
 use lazy_static::lazy_static;
 use predicates::prelude::*;
 use predicates::str::contains;
@@ -1804,6 +1805,95 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
 
     source_dbassert.has_chunk_count("public", "metrics", 3);
     target_dbassert.has_chunk_count("public", "metrics", 3);
+
+    Ok(())
+}
+
+#[test]
+fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() -> Result<()> {
+    // Note: If this test fails, it means that something changed in how TimescaleDB behaves.
+
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    // Initial setup
+    psql(
+        &source_container,
+        vec![
+            PsqlInput::Sql(SETUP_HYPERTABLE),
+            PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+            PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+        ],
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    // Compress a chunk after skeleton schema copy
+    psql(&source_container, vec![PsqlInput::Sql(COMPRESS_ONE_CHUNK)])?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-07-01T00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains(
+        "Staged 5 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))
+        .unwrap()
+        .assert()
+        .success()
+        .stdout(contains(
+            r#"Copied chunk "_timescaledb_internal"."_hyper_1_5_chunk" in"#,
+        ));
+
+    fn dump_table(database: &dyn HasConnectionString, table: &str) -> Result<String> {
+        let output = Command::new("pg_dump")
+            .args(["-d", database.connection_string().as_str()])
+            .args(["--format", "plain"])
+            .args(["--schema-only"])
+            .args(["--table", table])
+            .output()?;
+        Ok(String::from_utf8(output.stdout).unwrap())
+    }
+
+    let source_table_definition = dump_table(
+        &source_container,
+        "_timescaledb_internal.compress_hyper_2_6_chunk",
+    )?;
+    let target_table_definition = dump_table(
+        &target_container,
+        "_timescaledb_internal.bf_compress_hyper_2_6_chunk",
+    )?
+    .replace("bf_compress_hyper_2_6_chunk", "compress_hyper_2_6_chunk");
+
+    if source_table_definition != target_table_definition {
+        let patch = create_patch(&source_table_definition, &target_table_definition);
+        let f = PatchFormatter::new().with_color();
+        let diff_msg = format!(
+            "Compressed chunk table definition not the same:\n```diff\n{}```",
+            f.fmt_patch(&patch)
+        );
+        bail!(diff_msg);
+    }
+
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    source_dbassert.has_chunk_count("public", "metrics", 5);
+    target_dbassert.has_chunk_count("public", "metrics", 5);
 
     Ok(())
 }
