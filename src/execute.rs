@@ -23,6 +23,9 @@ static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 pub static TOTAL_BYTES_COPIED: AtomicUsize = AtomicUsize::new(0);
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
 const COMPRESSION_COLUMN_METADATA_SEQUENCE_NUM_NAME: &str = "_ts_meta_sequence_num";
+const WITH_TOAST_TUPLE_TARGET: &str = "WITH (toast_tuple_target = 128)";
+const TIMESCALE_INTERNAL_SCHEMA: &str = "_timescaledb_internal";
+const TIMESCALE_COMPRESSED_DATA_TYPE: &str = "compressed_data";
 
 pub async fn copy_chunk(
     source_tx: &Transaction<'_>,
@@ -652,7 +655,7 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
         &uncompressed_chunk.hypertable,
     )
     .await?;
-    let compress_chunk_schema = fetch_compress_chunk_schema(
+    let compress_chunk_schema = fetch_compress_chunk_schema_from_source(
         source_tx,
         qualified_data_table_name,
         source_compressed_chunk,
@@ -840,15 +843,13 @@ async fn get_max_identifier_length(tx: &Transaction<'_>) -> Result<usize> {
     }
 }
 
-/// Returns the name of the compressed hypertable associated to the given
+/// Returns the name the compressed hypertable associated to the given
 /// uncompressed hypertable.
-///
-/// The name is returned as "{schema}"."{name}" with both identifiers quoted.
-async fn compressed_hypertable_name(
+async fn fetch_compressed_hypertable(
     tx: &Transaction<'_>,
     uncompressed_hypertable_schema: &String,
     uncompressed_hypertable_table: &String,
-) -> Result<String> {
+) -> Result<Hypertable> {
     let row = tx
         .query_one(
             r#"
@@ -866,9 +867,9 @@ WHERE
         )
         .await?;
 
-    let schema_name: String = row.get("schema_name");
-    let table_name: String = row.get("table_name");
-    Ok(quote_table_name(&schema_name, &table_name))
+    let schema: String = row.get("schema_name");
+    let table: String = row.get("table_name");
+    Ok(Hypertable { schema, table })
 }
 
 /// Uses `_timescaledb_functions.create_compressed_chunk` to convert the
@@ -981,25 +982,35 @@ async fn create_compressed_chunk_data_table_from_parent(
     uncompressed_chunk: &TargetChunk,
     qualified_data_table_name: &str,
 ) -> Result<()> {
-    let parent_table_name = compressed_hypertable_name(
+    let parent_table = fetch_compressed_hypertable(
         target_tx,
         &uncompressed_chunk.hypertable.schema,
         &uncompressed_chunk.hypertable.table,
     )
     .await?;
 
-    let query = format!(
-        "create table {}() inherits ({})",
-        qualified_data_table_name, parent_table_name
-    );
+    let schema = fetch_compress_chunk_schema_from_parent(
+        target_tx,
+        qualified_data_table_name,
+        &parent_table,
+    )
+    .await?;
 
     trace!(
         "Creating compressed chunk data table {} as `{}`",
         &qualified_data_table_name,
-        query
+        schema.ddl_query
     );
 
-    target_tx.execute(&query, &[]).await?;
+    target_tx.execute(&schema.ddl_query, &[]).await?;
+
+    trace!(
+        "Setting statistics for compressed chunk data table {}",
+        qualified_data_table_name,
+    );
+
+    set_compress_chunk_statistics(target_tx, &schema, qualified_data_table_name).await?;
+
     Ok(())
 }
 
@@ -1013,7 +1024,7 @@ struct CompressedChunkSchema {
 ///
 /// Returns the query to create the compressed chunk by inspecting the
 /// columns definition of the chunk in the source database.
-async fn fetch_compress_chunk_schema(
+async fn fetch_compress_chunk_schema_from_source(
     source_tx: &Transaction<'_>,
     data_table_name: &str,
     source_chunk: &CompressedChunk,
@@ -1059,7 +1070,7 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 
         create_table_query.push_str(&format!("{} {}.{}", column_name, udt_schema, udt_name));
 
-        if udt_schema == "_timescaledb_internal" && udt_name == "compressed_data" {
+        if is_compressed_data_type(udt_schema, udt_name) {
             compressed_columns.push(String::from(column_name));
         } else {
             uncompressed_columns.push(String::from(column_name));
@@ -1108,13 +1119,71 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
     // The toast_tuple_target is set by the extension when creating the
     // compressed hypertable.
     // tsl/src/compression/compression_storage.c:set_toast_tuple_target_on_chunk
-    create_table_query.push_str(") WITH (toast_tuple_target = 128)");
+    create_table_query.push_str(") ");
+    create_table_query.push_str(WITH_TOAST_TUPLE_TARGET);
 
     Ok(CompressedChunkSchema {
         compressed_columns,
         uncompressed_columns,
         ddl_query: create_table_query,
     })
+}
+
+/// Only for TS < 2.14.
+///
+/// Returns the query to create the compressed chunk by inspecting the
+/// columns definition of the chunk in the source database.
+async fn fetch_compress_chunk_schema_from_parent(
+    target_tx: &Transaction<'_>,
+    qualified_data_table_name: &str,
+    parent: &Hypertable,
+) -> Result<CompressedChunkSchema> {
+    let columns_query: &str = r"
+        SELECT column_name, udt_schema, udt_name
+        FROM information_schema.columns cols
+        WHERE cols.table_schema = $1 AND cols.table_name = $2
+    ";
+
+    trace!("Fetching columns definition for parent compressed hypertable {parent:?}");
+    let rows = target_tx
+        .query(columns_query, &[&parent.schema, &parent.table])
+        .await
+        .with_context(|| "couldn't fetch parent compressed hypertable definition")?;
+
+    // Generate the CREATE TABLE query statement
+    //
+    // The toast_tuple_target is set by the extension when creating the
+    // compressed hypertable.
+    // tsl/src/compression/compression_storage.c:set_toast_tuple_target_on_chunk
+    let create_table_query = format!(
+        "CREATE TABLE {}() INHERITS ({}) {}",
+        qualified_data_table_name,
+        parent.quoted_name(),
+        WITH_TOAST_TUPLE_TARGET
+    );
+    let mut compressed_columns: Vec<String> = vec![];
+    let mut uncompressed_columns: Vec<String> = vec![];
+    for row in rows.iter() {
+        let column_name: &str = row.get(0);
+        let udt_schema: &str = row.get(1);
+        let udt_name: &str = row.get(2);
+
+        if is_compressed_data_type(udt_schema, udt_name) {
+            compressed_columns.push(String::from(column_name));
+        } else {
+            uncompressed_columns.push(String::from(column_name));
+        }
+    }
+
+    Ok(CompressedChunkSchema {
+        compressed_columns,
+        uncompressed_columns,
+        ddl_query: create_table_query,
+    })
+}
+
+fn is_compressed_data_type(udt_schema: &str, udt_name: &str) -> bool {
+    udt_schema == TIMESCALE_INTERNAL_SCHEMA && udt_name == TIMESCALE_COMPRESSED_DATA_TYPE
 }
 
 // Sets the statistics to the compressed chunk columns.
