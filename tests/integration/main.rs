@@ -2824,7 +2824,7 @@ generate_validate_tests!(
 );
 
 #[test]
-fn panic_copy_source_has_compressed_chunk_not_present_in_target_with_different_compression_settings(
+fn panic_on_copy_if_source_has_compressed_chunk_not_present_in_target_with_different_compression_settings(
 ) -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
@@ -2890,8 +2890,10 @@ fn panic_copy_source_has_compressed_chunk_not_present_in_target_with_different_c
     // in the source.
     result.stderr(
         contains(
-            "1: Compression settings mismatch."
+            r#"1: failed to create compressed chunk "_timescaledb_internal"."compress_hyper_2_7_chunk" for hypertable "public"."metrics""#
         ).and(contains(
+            "2: Compression settings mismatch."
+        )).and(contains(
             "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk' in source are different than the settings for the hypertable 'public.metrics' in target:"
         )).and(contains(
             r#"- SOURCE: CompressionSettings { segmentby: ["device_id", "label"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#

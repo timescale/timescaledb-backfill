@@ -69,9 +69,6 @@ pub async fn copy_chunk(
         return Ok(result);
     }
 
-    let target_supports_mutation_of_compressed_hypertables =
-        supports_mutation_of_compressed_hypertables(target_tx).await?;
-
     let source_compressed_chunk = get_compressed_chunk(source_tx, &task.source_chunk).await?;
 
     let target_chunk_is_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
@@ -86,7 +83,7 @@ pub async fn copy_chunk(
         // The target doesn't support mutable compression, so we won't be able
         // to remove any rows which would be present in the target chunk. To
         // work around this, we we'll decompress the target chunk
-        let no_mutable_compression = !target_supports_mutation_of_compressed_hypertables;
+        let no_mutable_compression = !features::mutation_of_compressed_hypertables();
         if source_chunk_decompressed || no_mutable_compression {
             decompress_chunk(target_tx, &target_chunk).await?;
         }
@@ -143,35 +140,58 @@ pub async fn copy_chunk(
             .await?;
             compressed_result = Some(result);
         } else {
-            let target_compressed_chunk_data_table = create_compressed_chunk_data_table(
+            let result = create_compressed_chunk_from_source_chunk(
                 source_tx,
                 target_tx,
                 &source_compressed_chunk,
                 &target_chunk,
             )
-            .await?;
-            let result = copy_compressed_chunk_data(
-                source_tx,
-                target_tx,
-                &source_compressed_chunk,
-                &target_compressed_chunk_data_table,
-            )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create compressed chunk {} for hypertable {}",
+                    source_compressed_chunk.quoted_name(),
+                    target_chunk.hypertable.quoted_name(),
+                )
+            })?;
             compressed_result = Some(result);
-            create_compressed_chunk_from_data_table(
-                source_tx,
-                target_tx,
-                &source_compressed_chunk,
-                &target_chunk,
-                &target_compressed_chunk_data_table,
-            )
-            .await?;
         };
     }
     Ok(CopyResult {
         rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
         bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
     })
+}
+
+async fn create_compressed_chunk_from_source_chunk(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    source_compressed_chunk: &SourceCompressedChunk,
+    target_uncompressed_chunk: &TargetChunk,
+) -> Result<CopyResult> {
+    let target_compressed_chunk_data_table = create_compressed_chunk_data_table(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        target_uncompressed_chunk,
+    )
+    .await?;
+    let result = copy_compressed_chunk_data(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        &target_compressed_chunk_data_table,
+    )
+    .await?;
+    create_compressed_chunk_from_data_table(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        target_uncompressed_chunk,
+        &target_compressed_chunk_data_table,
+    )
+    .await?;
+    Ok(result)
 }
 
 async fn hss_uncompressed_rows(source_tx: &Transaction<'_>, chunk: &SourceChunk) -> Result<bool> {
@@ -182,19 +202,6 @@ async fn hss_uncompressed_rows(source_tx: &Transaction<'_>, chunk: &SourceChunk)
         )
         .await?;
     Ok(row.get("exists"))
-}
-
-async fn supports_mutation_of_compressed_hypertables(tx: &Transaction<'_>) -> Result<bool> {
-    // Note: Mutation of compressed hypertables is only supported from pg14 and
-    // timescale 2.11.0, see https://github.com/timescale/timescaledb/pull/5339
-    Ok(tx.query_one(r"
-        SELECT
-            current_setting('server_version_num')::INT >= 140000
-            AND
-            (SELECT split_part(extversion, '.', 1)::INT FROM pg_catalog.pg_extension WHERE extname='timescaledb') = 2
-            AND
-            (SELECT split_part(extversion, '.', 2)::INT FROM pg_catalog.pg_extension WHERE extname='timescaledb') >= 11
-    ", &[]).await?.get(0))
 }
 
 async fn chunk_status_is_partial(
@@ -588,101 +595,107 @@ async fn create_compressed_chunk_data_table(
     let qualified_data_table_name =
         quote_table_name(&source_compressed_chunk.schema, &data_table_name);
     if features::per_chunk_compression() {
-        // TODO: move to another function
-        //
-        // When creating a compressed chunk by going through the public API
-        // with `SELECT compress_chunk(...)` or the private one
-        // `_timescaledb_functions.create_compressed_chunk` both methods end up
-        // calling:
-        //
-        // tsl/src/compression/compression_storage.c:create_compress_chunk
-        //
-        // The public method creates the data table while the private takes an
-        // existing table as argument. When the data table is created by the
-        // extension, it takes care of setting related to statistics, storage,
-        // indexes, constraints. These are all handled in the method:
-        //
-        // tsl/src/compression/compression_storage.c:compression_chunk_create
-        //
-        // We use the private API to avoid decompressing the data
-        // from source inserting into a chunk and compressing again, thus, we
-        // have to take care of setting everything appropriately and replicate
-        // most of the logic.
-        let compression_settings = validate_and_fetch_compression_settings(
+        create_compressed_chunk_data_table_from_source_chunk(
             source_tx,
             target_tx,
             source_compressed_chunk,
-            &uncompressed_chunk.hypertable,
-        )
-        .await?;
-        let (query, compressed_columns, uncompressed_columns) =
-            create_compressed_chunk_data_table_query_from_source_chunk(
-                source_tx,
-                &qualified_data_table_name,
-                source_compressed_chunk,
-            )
-            .await?;
-        trace!(
-            "Creating compressed chunk data table {} as `{}`",
-            &qualified_data_table_name,
-            query
-        );
-
-        target_tx.execute(&query, &[]).await?;
-        trace!(
-            "Setting statistics for compressed chunk data table {}",
-            &qualified_data_table_name,
-        );
-        set_compress_chunk_statistics(
-            target_tx,
-            compressed_columns,
-            uncompressed_columns,
-            &qualified_data_table_name,
-        )
-        .await?;
-        trace!(
-            "Creating index for compressed chunk data table {}",
-            &qualified_data_table_name,
-        );
-        create_compressed_chunk_index(
-            target_tx,
+            uncompressed_chunk,
             &qualified_data_table_name,
             &data_table_name,
-            &compression_settings,
-        )
-        .await?;
-        trace!(
-            "Cloning constraints from hypertable {} to data table {}",
-            uncompressed_chunk.hypertable.quoted_name(),
-            &qualified_data_table_name,
-        );
-        clone_constraints_to_chunk(
-            target_tx,
-            &uncompressed_chunk.hypertable,
-            &qualified_data_table_name,
         )
         .await?;
     } else {
-        let query = create_compressed_chunk_data_table_query_from_parent(
+        create_compressed_chunk_data_table_from_parent(
             target_tx,
             uncompressed_chunk,
             &qualified_data_table_name,
         )
         .await?;
-
-        trace!(
-            "Creating compressed chunk data table {} as `{}`",
-            &qualified_data_table_name,
-            query
-        );
-
-        target_tx.execute(&query, &[]).await?;
     }
 
     Ok(TargetCompressedChunk {
         schema: source_compressed_chunk.schema.clone(),
         table: data_table_name,
     })
+}
+
+// When creating a compressed chunk by going through the public API
+// with `SELECT compress_chunk(...)` or the private one
+// `_timescaledb_functions.create_compressed_chunk` both methods end up
+// calling:
+//
+// tsl/src/compression/compression_storage.c:create_compress_chunk
+//
+// The public method creates the data table while the private takes an
+// existing table as argument. When the data table is created by the
+// extension, it takes care of setting related to statistics, storage,
+// indexes, constraints. These are all handled in the method:
+//
+// tsl/src/compression/compression_storage.c:compression_chunk_create
+//
+// We use the private API to avoid decompressing the data
+// from source inserting into a chunk and compressing again, thus, we
+// have to take care of setting everything appropriately and replicate
+// most of the logic.
+async fn create_compressed_chunk_data_table_from_source_chunk(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    source_compressed_chunk: &SourceCompressedChunk,
+    uncompressed_chunk: &TargetChunk,
+    qualified_data_table_name: &str,
+    data_table_name: &str,
+) -> Result<()> {
+    let compression_settings = validate_and_fetch_compression_settings(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        &uncompressed_chunk.hypertable,
+    )
+    .await?;
+    let compress_chunk_schema = fetch_compress_chunk_schema(
+        source_tx,
+        qualified_data_table_name,
+        source_compressed_chunk,
+    )
+    .await?;
+    trace!(
+        "Creating compressed chunk data table {} as `{}`",
+        qualified_data_table_name,
+        compress_chunk_schema.ddl_query,
+    );
+
+    target_tx
+        .execute(&compress_chunk_schema.ddl_query, &[])
+        .await?;
+    trace!(
+        "Setting statistics for compressed chunk data table {}",
+        qualified_data_table_name,
+    );
+    set_compress_chunk_statistics(target_tx, &compress_chunk_schema, qualified_data_table_name)
+        .await?;
+    trace!(
+        "Creating index for compressed chunk data table {}",
+        qualified_data_table_name,
+    );
+    create_compressed_chunk_index(
+        target_tx,
+        qualified_data_table_name,
+        data_table_name,
+        &compression_settings,
+    )
+    .await?;
+    trace!(
+        "Cloning constraints from hypertable {} to data table {}",
+        uncompressed_chunk.hypertable.quoted_name(),
+        qualified_data_table_name,
+    );
+    clone_constraints_to_chunk(
+        target_tx,
+        &uncompressed_chunk.hypertable,
+        qualified_data_table_name,
+    )
+    .await?;
+    Ok(())
 }
 
 // Create the btree index for the compressed chunk which contains all the
@@ -959,37 +972,52 @@ SELECT EXISTS (
 
 /// Only for TS < 2.14.
 ///
-/// Returns the query to create the compressed chunk data table inheriting from
-/// the parent compressed hypertable. From TS >= 2.14 the parent table doesn't
-/// have any columns, in that scenario use
+/// Creates the compressed chunk data table inheriting from the parent
+/// compressed hypertable. From TS >= 2.14 the parent table doesn't have any
+/// columns, in that scenario use
 /// `create_compressed_chunk_data_table_query_from_source_chunk` instead.
-async fn create_compressed_chunk_data_table_query_from_parent(
-    tx: &Transaction<'_>,
+async fn create_compressed_chunk_data_table_from_parent(
+    target_tx: &Transaction<'_>,
     uncompressed_chunk: &TargetChunk,
-    data_table_name: &str,
-) -> Result<String> {
+    qualified_data_table_name: &str,
+) -> Result<()> {
     let parent_table_name = compressed_hypertable_name(
-        tx,
+        target_tx,
         &uncompressed_chunk.hypertable.schema,
         &uncompressed_chunk.hypertable.table,
     )
     .await?;
 
-    Ok(format!(
+    let query = format!(
         "create table {}() inherits ({})",
-        data_table_name, parent_table_name
-    ))
+        qualified_data_table_name, parent_table_name
+    );
+
+    trace!(
+        "Creating compressed chunk data table {} as `{}`",
+        &qualified_data_table_name,
+        query
+    );
+
+    target_tx.execute(&query, &[]).await?;
+    Ok(())
+}
+
+struct CompressedChunkSchema {
+    compressed_columns: Vec<String>,
+    uncompressed_columns: Vec<String>,
+    ddl_query: String,
 }
 
 /// Only for TS >= 2.14.
 ///
 /// Returns the query to create the compressed chunk by inspecting the
 /// columns definition of the chunk in the source database.
-async fn create_compressed_chunk_data_table_query_from_source_chunk(
+async fn fetch_compress_chunk_schema(
     source_tx: &Transaction<'_>,
     data_table_name: &str,
     source_chunk: &CompressedChunk,
-) -> Result<(String, Vec<String>, Vec<String>)> {
+) -> Result<CompressedChunkSchema> {
     let columns_query: &str = r"
 SELECT
   column_name, udt_schema, udt_name, character_maximum_length,
@@ -1082,7 +1110,11 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
     // tsl/src/compression/compression_storage.c:set_toast_tuple_target_on_chunk
     create_table_query.push_str(") WITH (toast_tuple_target = 128)");
 
-    Ok((create_table_query, compressed_columns, uncompressed_columns))
+    Ok(CompressedChunkSchema {
+        compressed_columns,
+        uncompressed_columns,
+        ddl_query: create_table_query,
+    })
 }
 
 // Sets the statistics to the compressed chunk columns.
@@ -1095,11 +1127,10 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 // tsl/src/compression/compression_storage.c:set_statistics_on_compressed_chunk
 async fn set_compress_chunk_statistics(
     target_tx: &Transaction<'_>,
-    compressed_columns: Vec<String>,
-    uncompressed_columns: Vec<String>,
+    chunk_schema: &CompressedChunkSchema,
     qualified_data_table_name: &str,
 ) -> Result<()> {
-    for compressed_column in compressed_columns.iter() {
+    for compressed_column in chunk_schema.compressed_columns.iter() {
         target_tx
             .execute(
                 &format!(
@@ -1110,7 +1141,7 @@ async fn set_compress_chunk_statistics(
             )
             .await?;
     }
-    for uncompressed_column in uncompressed_columns.iter() {
+    for uncompressed_column in chunk_schema.uncompressed_columns.iter() {
         target_tx
             .execute(
                 &format!(
