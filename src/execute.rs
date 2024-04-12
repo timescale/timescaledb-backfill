@@ -1,11 +1,11 @@
 use crate::execute::CopyMode::UncompressedOnly;
-use crate::features;
 use crate::sql::quote_table_name;
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
     set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, Hypertable, QuotedName,
     SourceChunk, SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
 };
+use crate::{features, sql};
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use futures_lite::StreamExt;
@@ -604,7 +604,6 @@ async fn create_compressed_chunk_data_table(
             source_compressed_chunk,
             uncompressed_chunk,
             &qualified_data_table_name,
-            &data_table_name,
         )
         .await?;
     } else {
@@ -625,16 +624,17 @@ async fn create_compressed_chunk_data_table(
 // When creating a compressed chunk by going through the public API
 // with `SELECT compress_chunk(...)` or the private one
 // `_timescaledb_functions.create_compressed_chunk` both methods end up
-// calling:
+// calling the [create_compress_chunk] function.
 //
-// tsl/src/compression/compression_storage.c:create_compress_chunk
+// [create_compress_chunk]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/create.c#L218
 //
 // The public method creates the data table while the private takes an
 // existing table as argument. When the data table is created by the
 // extension, it takes care of setting related to statistics, storage,
-// indexes, constraints. These are all handled in the method:
+// indexes, constraints. These are all handled by the
+// [compression_chunk_create] function.
 //
-// tsl/src/compression/compression_storage.c:compression_chunk_create
+// [compression_chunk_create]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L103
 //
 // We use the private API to avoid decompressing the data
 // from source inserting into a chunk and compressing again, thus, we
@@ -646,7 +646,6 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
     source_compressed_chunk: &SourceCompressedChunk,
     uncompressed_chunk: &TargetChunk,
     qualified_data_table_name: &str,
-    data_table_name: &str,
 ) -> Result<()> {
     let compression_settings = validate_and_fetch_compression_settings(
         source_tx,
@@ -655,7 +654,7 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
         &uncompressed_chunk.hypertable,
     )
     .await?;
-    let compress_chunk_schema = fetch_compress_chunk_schema_from_source(
+    let compressed_chunk_schema = fetch_compressed_chunk_schema_from_source(
         source_tx,
         qualified_data_table_name,
         source_compressed_chunk,
@@ -664,29 +663,28 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
     trace!(
         "Creating compressed chunk data table {} as `{}`",
         qualified_data_table_name,
-        compress_chunk_schema.ddl_query,
+        compressed_chunk_schema.ddl_query,
     );
 
     target_tx
-        .execute(&compress_chunk_schema.ddl_query, &[])
+        .execute(&compressed_chunk_schema.ddl_query, &[])
         .await?;
     trace!(
         "Setting statistics for compressed chunk data table {}",
         qualified_data_table_name,
     );
-    set_compress_chunk_statistics(target_tx, &compress_chunk_schema, qualified_data_table_name)
-        .await?;
+    set_compressed_chunk_statistics(
+        target_tx,
+        &compressed_chunk_schema,
+        qualified_data_table_name,
+    )
+    .await?;
     trace!(
         "Creating index for compressed chunk data table {}",
         qualified_data_table_name,
     );
-    create_compressed_chunk_index(
-        target_tx,
-        qualified_data_table_name,
-        data_table_name,
-        &compression_settings,
-    )
-    .await?;
+    create_compressed_chunk_index(target_tx, qualified_data_table_name, &compression_settings)
+        .await?;
     trace!(
         "Cloning constraints from hypertable {} to data table {}",
         uncompressed_chunk.hypertable.quoted_name(),
@@ -704,20 +702,24 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
 // Create the btree index for the compressed chunk which contains all the
 // segment by columns plus the metadata sequence number.
 //
-// Analogous to the extension function:
-// tsl/src/compression/compression_storage.c:create_compressed_chunk_indexes
+// Analogous to the extension function [create_compressed_chunk_indexes].
+//
+// [create_compressed_chunk_indexes]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L271
 async fn create_compressed_chunk_index(
     target_tx: &Transaction<'_>,
     qualified_data_table_name: &str,
-    data_table_name: &str,
     compression_settings: &CompressionSettings,
 ) -> Result<()> {
     let mut index_columns = compression_settings.segmentby.clone();
     index_columns.push(COMPRESSION_COLUMN_METADATA_SEQUENCE_NUM_NAME.to_string());
-    let index_name = format!("{data_table_name}_{}_idx", index_columns.join("_"));
+    let quoted_index_columns_list: String = index_columns
+        .iter()
+        .map(|c| sql::quote_ident(c))
+        .reduce(|acc, c| acc + "," + &c)
+        .unwrap_or_default();
     let query = format!(
-        "create index {index_name} on {qualified_data_table_name} using btree ({})",
-        index_columns.join(",")
+        "create index on {qualified_data_table_name} using btree ({})",
+        quoted_index_columns_list
     );
     target_tx.execute(&query, &[]).await?;
     Ok(())
@@ -784,12 +786,17 @@ async fn validate_and_fetch_compression_settings(
         bail!(
             r"Compression settings mismatch.
 
-Compression settings for the compressed chunk '{source_chunk_name}' in source are different than the settings for the hypertable '{target_hypertable_name}' in target:
+Compression settings for the compressed chunk '{source_chunk_name}'
+in source are different than the settings for the hypertable '{target_hypertable_name}'
+in target:
 
 - SOURCE: {source_settings:?}
 - TARGET: {target_settings:?}
 
-Stop compression jobs in the source, set the compression settings in the target to be the same as those of the compressed chunk, and restart the copy operation. Once the chunks with the old compression settings have been backfilled, you can change the settings back and restart the compression jobs.
+Stop compression jobs in the source, set the compression settings in the
+target to be the same as those of the compressed chunk, and restart the copy
+operation. Once the chunks with the old compression settings have been
+backfilled, you can change the settings back and restart the compression jobs.
 "
         );
     }
@@ -989,7 +996,7 @@ async fn create_compressed_chunk_data_table_from_parent(
     )
     .await?;
 
-    let schema = fetch_compress_chunk_schema_from_parent(
+    let schema = fetch_compressed_chunk_schema_from_parent(
         target_tx,
         qualified_data_table_name,
         &parent_table,
@@ -1009,7 +1016,7 @@ async fn create_compressed_chunk_data_table_from_parent(
         qualified_data_table_name,
     );
 
-    set_compress_chunk_statistics(target_tx, &schema, qualified_data_table_name).await?;
+    set_compressed_chunk_statistics(target_tx, &schema, qualified_data_table_name).await?;
 
     Ok(())
 }
@@ -1024,7 +1031,7 @@ struct CompressedChunkSchema {
 ///
 /// Returns the query to create the compressed chunk by inspecting the
 /// columns definition of the chunk in the source database.
-async fn fetch_compress_chunk_schema_from_source(
+async fn fetch_compressed_chunk_schema_from_source(
     source_tx: &Transaction<'_>,
     data_table_name: &str,
     source_chunk: &CompressedChunk,
@@ -1058,7 +1065,7 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
     let mut compressed_columns: Vec<String> = vec![];
     let mut uncompressed_columns: Vec<String> = vec![];
     for (i, row) in rows.iter().enumerate() {
-        let column_name: &str = row.get(0);
+        let column_name: String = sql::quote_ident(row.get("column_name"));
         let udt_schema: &str = row.get(1);
         let udt_name: &str = row.get(2);
         let character_max_length: Option<i32> = row.get(3);
@@ -1068,12 +1075,17 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
         let is_identity: &str = row.get(7);
         let attstorage: &str = row.get(8);
 
-        create_table_query.push_str(&format!("{} {}.{}", column_name, udt_schema, udt_name));
+        create_table_query.push_str(&format!(
+            "{} {}.{}",
+            column_name,
+            sql::quote_ident(udt_schema),
+            sql::quote_ident(udt_name)
+        ));
 
         if is_compressed_data_type(udt_schema, udt_name) {
-            compressed_columns.push(String::from(column_name));
+            compressed_columns.push(column_name);
         } else {
-            uncompressed_columns.push(String::from(column_name));
+            uncompressed_columns.push(column_name);
         }
 
         // Add character maximum length if applicable
@@ -1083,8 +1095,9 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 
         if features::storage_type_in_create_table() && !attstorage.is_empty() {
             // The STORAGE is set by the extension when creating the compressed
-            // hypertable
-            // tsl/src/compression/compression_storage.c:modify_compressed_toast_table_storage
+            // hypertable with the [modify_compressed_toast_table_storage].
+            //
+            // [modify_compressed_toast_table_storage]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L226
             create_table_query.push_str(&format!(" STORAGE {}", attstorage));
         }
 
@@ -1117,8 +1130,10 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
     }
 
     // The toast_tuple_target is set by the extension when creating the
-    // compressed hypertable.
-    // tsl/src/compression/compression_storage.c:set_toast_tuple_target_on_chunk
+    // compressed hypertable by calling the [set_toast_tuple_target_on_chunk]
+    // function.
+    //
+    // [set_toast_tuple_target_on_chunk]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L157
     create_table_query.push_str(") ");
     create_table_query.push_str(WITH_TOAST_TUPLE_TARGET);
 
@@ -1133,7 +1148,7 @@ WHERE cols.table_schema = $1 AND cols.table_name = $2
 ///
 /// Returns the query to create the compressed chunk by inspecting the
 /// columns definition of the chunk in the source database.
-async fn fetch_compress_chunk_schema_from_parent(
+async fn fetch_compressed_chunk_schema_from_parent(
     target_tx: &Transaction<'_>,
     qualified_data_table_name: &str,
     parent: &Hypertable,
@@ -1153,8 +1168,10 @@ async fn fetch_compress_chunk_schema_from_parent(
     // Generate the CREATE TABLE query statement
     //
     // The toast_tuple_target is set by the extension when creating the
-    // compressed hypertable.
-    // tsl/src/compression/compression_storage.c:set_toast_tuple_target_on_chunk
+    // compressed hypertable. This produces the same result as the extension
+    // function [set_toast_tuple_target_on_chunk].
+    //
+    // [set_toast_tuple_target_on_chunk]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L157.
     let create_table_query = format!(
         "CREATE TABLE {}() INHERITS ({}) {}",
         qualified_data_table_name,
@@ -1164,14 +1181,14 @@ async fn fetch_compress_chunk_schema_from_parent(
     let mut compressed_columns: Vec<String> = vec![];
     let mut uncompressed_columns: Vec<String> = vec![];
     for row in rows.iter() {
-        let column_name: &str = row.get(0);
+        let column_name = sql::quote_ident(row.get("column_name"));
         let udt_schema: &str = row.get(1);
         let udt_name: &str = row.get(2);
 
         if is_compressed_data_type(udt_schema, udt_name) {
-            compressed_columns.push(String::from(column_name));
+            compressed_columns.push(column_name);
         } else {
-            uncompressed_columns.push(String::from(column_name));
+            uncompressed_columns.push(column_name);
         }
     }
 
@@ -1192,9 +1209,10 @@ fn is_compressed_data_type(udt_schema: &str, udt_name: &str) -> bool {
 // will not understand them. Statistics on the other columns, segmentbys and
 // metadata, are very important, so their targets are increased.
 //
-// Analogous to the extension function:
-// tsl/src/compression/compression_storage.c:set_statistics_on_compressed_chunk
-async fn set_compress_chunk_statistics(
+// Analogous to the extension function [set_statistics_on_compressed_chunk].
+//
+// [set_statistics_on_compressed_chunk]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L175
+async fn set_compressed_chunk_statistics(
     target_tx: &Transaction<'_>,
     chunk_schema: &CompressedChunkSchema,
     qualified_data_table_name: &str,
@@ -1226,8 +1244,9 @@ async fn set_compress_chunk_statistics(
 
 // Clone the hypertable's constraints to the compressed chunk data table.
 //
-// Analogous to the extension function:
-// tsl/src/compression/compression_storage.c:clone_constraints_to_chunk
+// Analogous to the extension function [clone_constraints_to_chunk].
+//
+// [clone_constraints_to_chunk]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L343
 async fn clone_constraints_to_chunk(
     target_tx: &Transaction<'_>,
     hypertable: &Hypertable,

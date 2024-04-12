@@ -2919,7 +2919,9 @@ fn panic_on_copy_if_source_has_compressed_chunk_not_present_in_target_with_diffe
         ).and(contains(
             "2: Compression settings mismatch."
         )).and(contains(
-            "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk' in source are different than the settings for the hypertable 'public.metrics' in target:"
+            "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk'"
+        )).and(contains(
+            "in source are different than the settings for the hypertable 'public.metrics'"
         )).and(contains(
             r#"- SOURCE: CompressionSettings { segmentby: ["device_id", "label"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#
         )).and(contains(
@@ -2945,7 +2947,11 @@ fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() 
         &source_container,
         vec![
             PsqlInput::Sql(SETUP_HYPERTABLE),
-            PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+            PsqlInput::Sql(r#"ALTER TABLE public.metrics ADD COLUMN "column< needs+quotes" TEXT"#),
+            PsqlInput::Sql(
+                r#"
+    ALTER TABLE metrics SET (timescaledb.compress, timescaledb.compress_orderby = 'time', timescaledb.compress_segmentby = 'device_id,"column< needs+quotes"')"#,
+            ),
             PsqlInput::Sql(INSERT_DATA_FOR_MAY),
         ],
     )?;
@@ -2993,14 +2999,19 @@ fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() 
         &target_container,
         "_timescaledb_internal.bf_compress_hyper_2_6_chunk",
     )?
-    .replace("bf_compress_hyper_2_6_chunk", "compress_hyper_2_6_chunk");
+    .replace("bf_compress_hyper_2_6_chunk", "compress_hyper_2_6_chunk")
+    // Since we add the `bf` prefix the indexes names don't match.
+    .replace(
+        "compress_hyper_2_6_chunk_device_id_column< needs+quotes__idx",
+        "compress_hyper_2_6_chunk_device_id_column< needs+quotes__ts_idx",
+    );
 
     // When creating the compressed table with inheritance the indexes names
     // don't match because of a suffix.
     if ts_version() < TS214 {
         target_table_definition = target_table_definition.replace(
             "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_",
-            "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id__ts",
+            "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_col",
         );
     }
 
