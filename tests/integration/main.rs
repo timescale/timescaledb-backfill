@@ -2,7 +2,6 @@ use crate::config::{
     TestConfig, TestConfigClean, TestConfigCopy, TestConfigRefreshCaggs, TestConfigStage,
     TestConfigVerify,
 };
-use crate::TsVersion::{TS210, TS211, TS212, TS213, TS214};
 use anyhow::{bail, Context, Result};
 use assert_cmd::prelude::*;
 use diffy::{create_patch, PatchFormatter};
@@ -13,15 +12,14 @@ use semver::{Version, VersionReq};
 use std::clone::Clone;
 use std::env;
 use std::ffi::OsStr;
-use std::fmt::{Display, Formatter};
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
+use test_common::TsVersion::{TS213, TS214};
 use test_common::*;
 use testcontainers::clients::Cli;
-use testcontainers::images::generic::GenericImage;
 use tracing::debug;
 
 pub mod config;
@@ -196,52 +194,11 @@ fn pg_version() -> PgVersion {
     external_version().unwrap_or(PgVersion::PG16)
 }
 
-#[allow(dead_code)]
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub enum TsVersion {
-    TS210,
-    TS211,
-    TS212,
-    TS213,
-    TS214,
-}
-
-impl From<String> for TsVersion {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            "2.10" => TS210,
-            "2.11" => TS211,
-            "2.12" => TS212,
-            "2.13" => TS213,
-            "2.14" => TS214,
-            _ => unimplemented!(),
-        }
-    }
-}
-
-impl Display for TsVersion {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TS210 => write!(f, "2.10"),
-            TS211 => write!(f, "2.11"),
-            TS212 => write!(f, "2.12"),
-            TS213 => write!(f, "2.13"),
-            TS214 => write!(f, "2.14"),
-        }
-    }
-}
-
 fn ts_version() -> TsVersion {
     env::var("BF_TEST_TS_VERSION")
         .ok()
         .map(TsVersion::from)
         .unwrap_or(TS214)
-}
-
-fn timescaledb(pg_version: PgVersion, ts_version: TsVersion) -> GenericImage {
-    let version_tag = format!("pg{}-ts{}", pg_version, ts_version);
-    generic_postgres(TIMESCALEDB_IMAGE, version_tag.as_str())
-        .with_env_var("TIMESCALEDB_TELEMETRY", "off")
 }
 
 /// Spawns a backfill process with the specified test configuration [`TestConfig`],
