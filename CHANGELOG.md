@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.11.0](https://github.com/timescale/timescaledb-backfill/compare/v0.10.0...v0.11.0) (2024-04-23)
+
+
+### Features
+
+* copy foreign key constraints from hypertable to compress chunks ([1172f99](https://github.com/timescale/timescaledb-backfill/commit/1172f994930492cea7a2aab75954e5760040fbfb))
+* copy statistics when creating compressed chunk from parent ([7c03436](https://github.com/timescale/timescaledb-backfill/commit/7c03436d61bdf67f3cc041016f88fbe5237be856))
+* copy toast and statistic settings from source compressed chunk ([5836c37](https://github.com/timescale/timescaledb-backfill/commit/5836c373cb3016a298e61a7f60c2631f485f0550))
+* create compressed hypertable index ([23d39e5](https://github.com/timescale/timescaledb-backfill/commit/23d39e5f69c27412dc2f97c6107539b0167e6f0f))
+* print version on startup ([7cf444e](https://github.com/timescale/timescaledb-backfill/commit/7cf444ea88ad94118e353e548857b6c58245c32c))
+* support TS 2.14 per chunk compression ([64c692d](https://github.com/timescale/timescaledb-backfill/commit/64c692d5d733abd5e8baf8e8e07ba6d7911f11b5))
+
+
+### Bug Fixes
+
+* do not fail when no caggs found to refresh ([fac79dd](https://github.com/timescale/timescaledb-backfill/commit/fac79ddb9054ace319a6e18e98af41c2874eaf65))
+
+
+### Miscellaneous
+
+* update release-please action to v4 ([c192b9b](https://github.com/timescale/timescaledb-backfill/commit/c192b9b048ae9452f439b13c2134a0adde6c05a1))
+
 ## [0.10.0](https://github.com/timescale/timescaledb-backfill/compare/v0.9.1...v0.10.0) (2024-04-08)
 
 
