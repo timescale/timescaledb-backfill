@@ -10,7 +10,7 @@ transactionally, ensuring data integrity during the migration process.
 
 - The tool only supports migrations for hypertables. Schema migrations and
   non-hypertable migrations should be handled separately before using this
-  tool. 
+  tool.
 - The tool is optimized for append-only workloads, and other
   scenarios may not be fully supported.
 
@@ -58,50 +58,50 @@ the administrative schema after the migration.
   hypertables will be backfilled.
 
   ```sh
-  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB --until '2016-01-02T00:00:00' 
+  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB --until '2016-01-02T00:00:00'
   ```
 
 - **Copy Command:** The `copy` command processes the tasks created during the
   staging phase and copies the corresponding hypertable chunks to the target
   TimescaleDB instance.
 
-   ```sh 
-   timescaledb-backfill copy --source $SOURCE_DB --target $TARGET_DB
-   ```
+  ```sh
+  timescaledb-backfill copy --source $SOURCE_DB --target $TARGET_DB
+  ```
 
 - **Clean Command:** The `clean` command removes the administrative schema
   (`__backfill`) that was used to store the tasks once the migration is completed
   successfully.
 
-  ```sh 
-  timescaledb-backfill clean --target $TARGET_DB 
-  ```
-
-### Usage examples 
-
-- Backfilling with a filter and until date: 
-
   ```sh
-  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \ 
-    --filter 'my_table.*' --until '2016-01-02T00:00:00' 
-  timescaledb-backfill copy --source $SOURCE_DB --target $TARGET_DB 
   timescaledb-backfill clean --target $TARGET_DB
   ```
 
-- Running multiple stages with different filters and until dates: 
+### Usage examples
+
+- Backfilling with a filter and until date:
 
   ```sh
-  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \ 
-    --filter 'schema1.table_with_time_as_timestampz' \ 
-    --until '2015-01-01T00:00:00' 
-  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \ 
-    --filter 'schema1.table_with_time_as_bigint' \ 
-    --until '91827364' 
-  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \ 
-    --filter 'schema2.*' \ 
-    --until '2017-01-01T00:00:00' 
+  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \
+    --filter 'my_table.*' --until '2016-01-02T00:00:00'
   timescaledb-backfill copy --source $SOURCE_DB --target $TARGET_DB
-  timescaledb-backfill clean --target $TARGET_DB 
+  timescaledb-backfill clean --target $TARGET_DB
+  ```
+
+- Running multiple stages with different filters and until dates:
+
+  ```sh
+  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \
+    --filter 'schema1.table_with_time_as_timestampz' \
+    --until '2015-01-01T00:00:00'
+  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \
+    --filter 'schema1.table_with_time_as_bigint' \
+    --until '91827364'
+  timescaledb-backfill stage --source $SOURCE_DB --target $TARGET_DB \
+    --filter 'schema2.*' \
+    --until '2017-01-01T00:00:00'
+  timescaledb-backfill copy --source $SOURCE_DB --target $TARGET_DB
+  timescaledb-backfill clean --target $TARGET_DB
   ```
 
 ## License
