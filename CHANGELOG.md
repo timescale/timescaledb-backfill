@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.1](https://github.com/timescale/timescaledb-backfill/compare/v0.11.0...v0.11.1) (2024-05-16)
+
+
+### Miscellaneous
+
+* add apache2 license ([e9d2d31](https://github.com/timescale/timescaledb-backfill/commit/e9d2d31932da3eefa8535c766058619319120505))
+* **deps:** use test-common v0.16.0 ([dc7a259](https://github.com/timescale/timescaledb-backfill/commit/dc7a2591ce849661611cb322de0650ba4123f8af))
+* update readme ([ed2c9e7](https://github.com/timescale/timescaledb-backfill/commit/ed2c9e7d0daf8d9f118bb17d757639c13b87a773))
+
 ## [0.11.0](https://github.com/timescale/timescaledb-backfill/compare/v0.10.0...v0.11.0) (2024-04-23)
 
 
