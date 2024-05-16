@@ -1,20 +1,37 @@
 # TimescaleDB Backfill
 
 The TimescaleDB Backfill Tool is a command-line utility designed to support
-migrations from TimescaleDB instances by backfilling data from hypertables. It
-allows users to copy hypertable chunks directly, without the need for
-intermediate storage or decompressing compressed chunks. The tool operates
-transactionally, ensuring data integrity during the migration process.
+the [dual-write and backfill] low-downtime migration process. It efficiently
+copies data for a given time range directly from hypertable chunks, without
+the need for intermediate storage or decompressing compressed chunks. The
+tool operates transactionally, ensuring data integrity during the migration
+process.
+
+Note: Because the tool was intended for use in the dual-write and backfill
+migration, it will delete data already in the target hypertable for the time
+range that it is copying.
+
+[dual-write and backfill]: https://docs.timescale.com/migrate/latest/dual-write-and-backfill/
 
 ## Limitations
 
-- The tool only supports migrations for hypertables. Schema migrations and
+- The tool only supports migrating hypertable data. Schema migrations and
   non-hypertable migrations should be handled separately before using this
   tool.
-- The tool is optimized for append-only workloads, and other
-  scenarios may not be fully supported.
+- The tool is optimized for append-only workloads, other scenarios may not
+  be fully supported.
 
 ## How to Install
+
+### Install precompiled binary
+
+```sh
+wget https://assets.timescale.com/releases/timescaledb-backfill-x86_64-linux.tar.gz
+tar xf timescaledb-backfill-x86_64-linux.tar.gz
+sudo mv timescaledb-backfill /usr/local/bin/
+```
+
+### Compile
 
 Make sure you have Rust installed on your system.
 
