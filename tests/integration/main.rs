@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
-use test_common::TsVersion::{TS213, TS214};
+use test_common::TsVersion::{TS217, TS218};
 use test_common::*;
 use testcontainers::clients::Cli;
 use tracing::debug;
@@ -26,6 +26,7 @@ pub mod config;
 
 lazy_static! {
     static ref TS_LT_2_12: VersionReq = VersionReq::parse("<2.12").unwrap();
+    static ref TS_HYPERCORE_SUPPORT: VersionReq = VersionReq::parse(">=2.18, <2.22").unwrap();
 }
 
 static SETUP_HYPERTABLE: &str = r"
@@ -54,6 +55,10 @@ static ENABLE_HYPERTABLE_COMPRESSION: &str = r"
 
 static COMPRESS_ONE_CHUNK: &str = r"
     SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false LIMIT 1;
+";
+
+static ENABLE_HYPERCORE_ACCESS_METHOD: &str = r"
+    ALTER TABLE metrics SET ACCESS METHOD hypercore;
 ";
 
 static COMPRESS_ALL_CHUNKS: &str = r"
@@ -191,14 +196,14 @@ fn external_version() -> Option<PgVersion> {
 }
 
 fn pg_version() -> PgVersion {
-    external_version().unwrap_or(PgVersion::PG16)
+    external_version().unwrap_or(PgVersion::PG17)
 }
 
 fn ts_version() -> TsVersion {
     env::var("BF_TEST_TS_VERSION")
         .ok()
         .map(TsVersion::from)
-        .unwrap_or(TS214)
+        .unwrap_or(TS217)
 }
 
 /// Spawns a backfill process with the specified test configuration [`TestConfig`],
@@ -1552,8 +1557,8 @@ fn abort_on_mismatching_timescaledb_version() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version(), TS213));
-    let target_container = docker.run(timescaledb(pg_version(), TS214));
+    let source_container = docker.run(timescaledb(pg_version(), TS217));
+    let target_container = docker.run(timescaledb(pg_version(), TS218));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
@@ -1688,12 +1693,12 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
-    // Given 2 chunks
+    // Given 3 chunks
     psql(
         &source_container,
         vec![
             PsqlInput::Sql(SETUP_HYPERTABLE),
-            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
+            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE),
             PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
         ],
     )?;
@@ -1720,6 +1725,16 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     )?;
 
     copy_skeleton_schema(&source_container, &target_container)?;
+
+    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
+        .unwrap()
+        .with_name("source");
+    let mut target_dbassert = DbAssert::new(&target_container.connection_string())
+        .unwrap()
+        .with_name("target");
+
+    source_dbassert.has_chunk_count("public", "metrics", 2);
+    target_dbassert.has_chunk_count("public", "metrics", 2);
 
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -1760,8 +1775,10 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
         .unwrap()
         .with_name("target");
 
-    source_dbassert.has_chunk_count("public", "metrics", 3);
-    target_dbassert.has_chunk_count("public", "metrics", 3);
+    source_dbassert.has_chunk_count("public", "metrics", 1);
+    // And the target has 2 chunks because it was created by skeleton_copy and
+    // dropped in source before the COPY.
+    target_dbassert.has_chunk_count("public", "metrics", 2);
 
     Ok(())
 }
@@ -1789,12 +1806,14 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
                 ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
                 ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
             ),
-            // Mark two of three chunks as dropped
+            // Mark two of three chunks as dropped. This only happens when the
+            // table has a CAGG, and the CAGG is still building
+            // https://github.com/timescale/timescaledb/blob/b8057f90916dac54fd6f6400e1cab6eddd226a02/src/chunk.c#L4031
             PsqlInput::Sql(
-                r"SELECT public.drop_chunks(
-            'public.metrics',
-            '2016-01-02T00:00:00Z'::timestamptz - INTERVAL '2 month')
-            ",
+                r"UPDATE _timescaledb_catalog.chunk
+                SET dropped = true
+                WHERE id in (1, 2)
+                ",
             ),
         ],
     )?;
@@ -2187,6 +2206,11 @@ static CAGG_T2_EXPECTED: CaggExpected = CaggExpected {
 fn is_ts_version_lt_2_12(dsn: &TestConnectionString) -> Result<bool> {
     let ts_version = Version::parse(get_ts_version(dsn)?.as_ref())?;
     Ok(TS_LT_2_12.matches(&ts_version))
+}
+
+fn supports_hypercore(dsn: &TestConnectionString) -> Result<bool> {
+    let ts_version = Version::parse(get_ts_version(dsn)?.as_ref())?;
+    Ok(TS_HYPERCORE_SUPPORT.matches(&ts_version))
 }
 
 // Timescale 2.12 changed the way the hierarchical caggs interval are
@@ -2806,16 +2830,53 @@ generate_validate_tests!(
 );
 
 #[test]
+fn validate_hypertables_hypercore_not_supported() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    // Skip test if hypercore is not supported in this TimescaleDB version
+    if !supports_hypercore(&source_container.connection_string())? {
+        println!("Skipping hypercore test - TimescaleDB version doesn't support hypercore");
+        return Ok(());
+    }
+
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    // Setup hypertable and data
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    // Enable hypercore access method on source
+    psql(
+        &source_container,
+        PsqlInput::Sql(ENABLE_HYPERCORE_ACCESS_METHOD),
+    )?;
+
+    // Attempt to stage and expect failure
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2025-01-01 00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .failure()
+    .stderr(contains("TimescaleDB does no longer support the hypercore table access method. Convert the following tables to heap access method before upgrading: public.metrics"));
+
+    Ok(())
+}
+
+#[test]
 fn panic_on_copy_if_source_has_compressed_chunk_not_present_in_target_with_different_compression_settings(
 ) -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
     let docker = Cli::default();
 
-    if ts_version() < TS214 {
-        println!("test skipped. Compression settings are available from TS >= 2.14");
-        return Ok(());
-    }
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
@@ -2965,12 +3026,10 @@ fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() 
 
     // When creating the compressed table with inheritance the indexes names
     // don't match because of a suffix.
-    if ts_version() < TS214 {
-        target_table_definition = target_table_definition.replace(
-            "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_",
-            "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_col",
-        );
-    }
+    target_table_definition = target_table_definition.replace(
+        "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_",
+        "compress_hyper_2_6_chunk__compressed_hypertable_2_device_id_col",
+    );
 
     if source_table_definition != target_table_definition {
         let patch = create_patch(&source_table_definition, &target_table_definition);

@@ -18,15 +18,12 @@ env:
 
 jobs:
   changes:
-    runs-on: non-prod
+    runs-on: ubuntu-latest
     outputs:
       files: ${{ steps.filter.outputs.files }}
     steps:
       - name: Setup | Checkout submodules
-        uses: actions/checkout@v3
-        with:
-          submodules: true
-          token: ${{ secrets.API_TOKEN_GITHUB }}
+        uses: actions/checkout@v4
       - uses: dorny/paths-filter@v2
         id: filter
         with:
@@ -44,13 +41,10 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.files == 'true' }}
 
-    strategy:
-      fail-fast: true
-
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
@@ -86,13 +80,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pgversion: [13, 14, 15, 16]
-        tsversion: [2.13, 2.14]
+        pgversion: [17]
+        tsversion: ["2.17", "2.18", "2.19", "2.20", "2.21"]
 
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
@@ -115,13 +109,13 @@ jobs:
 
       # This is required for the integration tests. If we move them to their
       # own action we can remove it.
-      - name: Install PG16
+      - name: Install PG17
         run: |
-          sudo apt-get --purge remove postgresql-14 postgresql-client-14 -y
+          sudo apt-get --purge remove postgresql-16 postgresql-client-16 -y
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null
           sudo apt update
-          sudo apt install postgresql postgresql-client -y
+          sudo apt install postgresql-17 postgresql-client-17 -y
           psql --version
           pg_dump --version
 

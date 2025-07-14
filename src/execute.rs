@@ -1,5 +1,5 @@
 use crate::execute::CopyMode::UncompressedOnly;
-use crate::sql::quote_table_name;
+use crate::sql::{quote_ident, quote_table_name};
 use crate::task::{find_target_chunk_with_same_dimensions, CopyTask};
 use crate::timescale::{
     set_query_target_proc_schema, Chunk, CompressedChunk, CompressionSize, Hypertable, QuotedName,
@@ -22,7 +22,6 @@ use tracing::{debug, trace, warn};
 static MAX_IDENTIFIER_LENGTH: OnceCell<usize> = OnceCell::new();
 pub static TOTAL_BYTES_COPIED: AtomicUsize = AtomicUsize::new(0);
 const COMPRESS_TABLE_NAME_PREFIX: &str = "bf_";
-const COMPRESSION_COLUMN_METADATA_SEQUENCE_NUM_NAME: &str = "_ts_meta_sequence_num";
 const WITH_TOAST_TUPLE_TARGET: &str = "WITH (toast_tuple_target = 128)";
 const TIMESCALE_INTERNAL_SCHEMA: &str = "_timescaledb_internal";
 const TIMESCALE_COMPRESSED_DATA_TYPE: &str = "compressed_data";
@@ -699,13 +698,16 @@ async fn create_compressed_chunk_data_table_from_source_chunk(
     Ok(())
 }
 
+// FUNCTION ONLY WORKS ON TS VERSIONS OLDER THAN 2.17
+//
 // Create the btree index for the compressed chunk which contains all the
 // segment by columns plus the metadata sequence number.
 //
 // Analogous to the extension function [create_compressed_chunk_indexes].
 //
 // [create_compressed_chunk_indexes]: https://github.com/timescale/timescaledb/blob/2.14.2/tsl/src/compression/compression_storage.c#L271
-async fn create_compressed_chunk_index(
+const COMPRESSION_COLUMN_METADATA_SEQUENCE_NUM_NAME: &str = "_ts_meta_sequence_num";
+async fn create_compressed_chunk_index_pre_ts_217(
     target_tx: &Transaction<'_>,
     qualified_data_table_name: &str,
     compression_settings: &CompressionSettings,
@@ -717,15 +719,109 @@ async fn create_compressed_chunk_index(
         .map(|c| sql::quote_ident(c))
         .reduce(|acc, c| acc + "," + &c)
         .unwrap_or_default();
+
     let query = format!(
         "create index on {qualified_data_table_name} using btree ({})",
         quoted_index_columns_list
     );
+
     target_tx.execute(&query, &[]).await?;
     Ok(())
 }
 
-async fn fetch_compression_settings(
+// Create the btree index for the compressed chunk which contains all the
+// segment by columns plus the metadata sequence number.
+//
+// Analogous to the extension function [create_compressed_chunk_indexes].
+//
+// [create_compressed_chunk_indexes]: https://github.com/timescale/timescaledb/blob/2.21.0/tsl/src/compression/compression_storage.c#L283
+async fn create_compressed_chunk_index(
+    target_tx: &Transaction<'_>,
+    qualified_data_table_name: &str,
+    compression_settings: &CompressionSettings,
+) -> Result<()> {
+    if !features::no_sequence_number_in_compressed_hypertables() {
+        return create_compressed_chunk_index_pre_ts_217(
+            target_tx,
+            qualified_data_table_name,
+            compression_settings,
+        )
+        .await;
+    }
+
+    let mut index_columns: Vec<String> = compression_settings
+        .segmentby
+        .clone()
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect();
+
+    // Add min/max columns for orderby settings
+    for (i, _) in compression_settings.orderby.iter().enumerate() {
+        let column_index = i + 1; // 1-based indexing as in C code
+        let order_by = if compression_settings.orderby_desc[i] {
+            // DESC ordering
+            if compression_settings.orderby_nullsfirst[i] {
+                // DESC with nulls first uses default nulls ordering
+                "DESC"
+            } else {
+                // DESC with nulls last
+                "DESC NULLS LAST"
+            }
+        } else {
+            // ASC ordering
+            if compression_settings.orderby_nullsfirst[i] {
+                // ASC with nulls first
+                "ASC NULLS FIRST"
+            } else {
+                // ASC with nulls last uses default nulls ordering
+                "ASC"
+            }
+        };
+        let min_column = quote_ident(&format!("_ts_meta_min_{}", column_index));
+        let max_column = quote_ident(&format!("_ts_meta_max_{}", column_index));
+        index_columns.push(format!("{min_column} {order_by}"));
+        index_columns.push(format!("{max_column} {order_by}"));
+    }
+
+    let quoted_index_columns_list: String = index_columns
+        .into_iter()
+        .reduce(|acc, c| acc + "," + &c)
+        .unwrap_or_default();
+    let query = format!(
+        "create index on {qualified_data_table_name} using btree ({})",
+        quoted_index_columns_list
+    );
+    target_tx
+        .execute(&query, &[])
+        .await
+        .with_context(|| "failed to create compress chunk index")?;
+    Ok(())
+}
+
+async fn fetch_compressed_chunk_compression_settings(
+    tx: &Transaction<'_>,
+    table_name: &String,
+) -> Result<CompressionSettings> {
+    let mut relid_column = quote_ident("compress_relid");
+    if !features::compression_settings_with_compress_relid() {
+        relid_column = quote_ident("relid");
+    }
+    let compression_settings_query = format!(
+        r"
+        SELECT segmentby, orderby, orderby_desc, orderby_nullsfirst
+        FROM _timescaledb_catalog.compression_settings
+        WHERE {relid_column} = $1::text::regclass
+    "
+    );
+    let settings: CompressionSettings = tx
+        .query_one(&compression_settings_query, &[&table_name])
+        .await?
+        .into();
+    Ok(settings)
+}
+
+async fn fetch_hypertable_compression_settings(
     tx: &Transaction<'_>,
     table_name: &String,
 ) -> Result<CompressionSettings> {
@@ -776,12 +872,14 @@ async fn validate_and_fetch_compression_settings(
 ) -> Result<CompressionSettings> {
     let target_hypertable_name =
         &format!("{}.{}", target_hypertable.schema, target_hypertable.table);
-    let target_settings = fetch_compression_settings(target_tx, target_hypertable_name).await?;
+    let target_settings =
+        fetch_hypertable_compression_settings(target_tx, target_hypertable_name).await?;
     let source_chunk_name = &format!(
         "{}.{}",
         &source_compressed_chunk.schema, &source_compressed_chunk.table
     );
-    let source_settings = fetch_compression_settings(source_tx, source_chunk_name).await?;
+    let source_settings =
+        fetch_compressed_chunk_compression_settings(source_tx, source_chunk_name).await?;
     if source_settings != target_settings {
         bail!(
             r"Compression settings mismatch.
