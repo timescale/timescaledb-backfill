@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/timescale/timescaledb-backfill/compare/v0.11.1...v0.12.0) (2025-07-15)
+
+
+### Features
+
+* support TS 2.17 to 2.21 ([d5a2694](https://github.com/timescale/timescaledb-backfill/commit/d5a2694ef7921d068778e5b51df23d11053a00a4))
+
 ## [0.11.1](https://github.com/timescale/timescaledb-backfill/compare/v0.11.0...v0.11.1) (2024-05-16)
 
 
