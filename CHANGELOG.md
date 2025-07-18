@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/timescale/timescaledb-backfill/compare/v0.12.0...v0.12.1) (2025-07-18)
+
+
+### Miscellaneous
+
+* add dependabot config ([5d77bd0](https://github.com/timescale/timescaledb-backfill/commit/5d77bd0f3f599b2eb035aeb51f8ffb641250681e))
+
 ## [0.12.0](https://github.com/timescale/timescaledb-backfill/compare/v0.11.1...v0.12.0) (2025-07-15)
 
 
