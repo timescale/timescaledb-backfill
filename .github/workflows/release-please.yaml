@@ -35,7 +35,7 @@ jobs:
       TARFILE_NAME: timescaledb-backfill-x86_64-linux.tar.gz
       VERSIONED_TARFILE_NAME: timescaledb-backfill-${{ needs.release-please.outputs.tag_name }}-x86_64-linux.tar.gz
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
