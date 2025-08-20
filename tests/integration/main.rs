@@ -3006,7 +3006,16 @@ fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() 
             .args(["--schema-only"])
             .args(["--table", table])
             .output()?;
-        Ok(String::from_utf8(output.stdout).unwrap())
+        let dump = String::from_utf8(output.stdout).unwrap();
+
+        // Filter out pg_dump security tokens that change between runs
+        let filtered = dump
+            .lines()
+            .filter(|line| !line.starts_with("\\restrict ") && !line.starts_with("\\unrestrict "))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(filtered)
     }
 
     let source_table_definition = dump_table(
@@ -3050,6 +3059,72 @@ fn assert_that_we_create_compressed_chunks_the_same_way_that_timescaledb_does() 
 
     source_dbassert.has_chunk_count("public", "metrics", 5);
     target_dbassert.has_chunk_count("public", "metrics", 5);
+
+    Ok(())
+}
+
+#[test]
+fn binary_copy_fallback_to_text() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    // Creates compressed chunks with bloom filters that contain TimescaleDB internal types
+    // like _timescaledb_internal.bloom1 which lack binary I/O functions, forcing fallback to text format
+
+    let docker = Cli::default();
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+    // Initial setup
+    psql(
+        &source_container,
+        vec![
+            PsqlInput::Sql(SETUP_HYPERTABLE),
+            PsqlInput::Sql(r#"ALTER TABLE public.metrics ADD COLUMN "transaction_id" BIGSERIAL"#),
+            // Forces the creation of a compressed chunk with a bloom filter
+            PsqlInput::Sql(r#"CREATE INDEX ON public.metrics USING btree (transaction_id)"#),
+            PsqlInput::Sql(
+                r#"
+    ALTER TABLE metrics SET (timescaledb.compress, timescaledb.compress_orderby = 'time', timescaledb.compress_segmentby = 'device_id')"#,
+            ),
+            PsqlInput::Sql(INSERT_DATA_FOR_MAY),
+        ],
+    )?;
+
+    copy_skeleton_schema(&source_container, &target_container)?;
+
+    // Compress a chunk after skeleton schema copy
+    psql(&source_container, vec![PsqlInput::Sql(COMPRESS_ALL_CHUNKS)])?;
+
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-07-01T00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .success()
+    .stdout(contains(
+        "Staged 5 chunks to copy.\nExecute the 'copy' command to migrate the data.",
+    ));
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success();
+
+    let mut source_dbassert =
+        DbAssert::new(&source_container.connection_string())?.with_name("source");
+    let mut target_dbassert =
+        DbAssert::new(&target_container.connection_string())?.with_name("target");
+
+    let expected_row_count = 744;
+    source_dbassert.has_table_count("public", "metrics", expected_row_count);
+    target_dbassert.has_table_count("public", "metrics", expected_row_count);
+    source_dbassert.has_chunk_count("public", "metrics", 5);
+    target_dbassert.has_chunk_count("public", "metrics", 5);
+
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("Chunk verification failed").not());
 
     Ok(())
 }
