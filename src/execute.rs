@@ -452,15 +452,26 @@ async fn copy_chunk_from_source_to_target(
     use_only: bool,
 ) -> Result<CopyResult> {
     let only = if use_only { "ONLY" } else { "" };
+
+    let format_str = if table_requires_text_format(source_tx, source_chunk_name).await? {
+        warn!(
+            "Table {} contains types that don't support binary I/O, using text format",
+            source_chunk_name
+        );
+        "TEXT"
+    } else {
+        "BINARY"
+    };
+
     let copy_out = filter.as_ref().map(|filter| {
-        format!("COPY (SELECT * FROM {only} {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT BINARY)")
+        format!("COPY (SELECT * FROM {only} {source_chunk_name} WHERE {filter}) TO STDOUT WITH (FORMAT {format_str})")
     }).unwrap_or(
-        format!("COPY (SELECT * FROM {only} {source_chunk_name}) TO STDOUT WITH (FORMAT BINARY)")
+        format!("COPY (SELECT * FROM {only} {source_chunk_name}) TO STDOUT WITH (FORMAT {format_str})")
     );
 
     debug!("{copy_out}");
 
-    let copy_in = format!("COPY {target_chunk_name} FROM STDIN WITH (FORMAT BINARY)");
+    let copy_in = format!("COPY {target_chunk_name} FROM STDIN WITH (FORMAT {format_str})");
     debug!("{copy_in}");
 
     let stream = source_tx.copy_out(&copy_out).await?;
@@ -512,6 +523,28 @@ async fn copy_from_source_to_sink(
     TOTAL_BYTES_COPIED.fetch_add(bytes, Relaxed);
 
     Ok(CopyResult { rows, bytes })
+}
+
+async fn table_requires_text_format(
+    tx: &Transaction<'_>,
+    qualified_table_name: &str,
+) -> Result<bool> {
+    let row = tx
+        .query_one(
+            r#"
+            SELECT COUNT(*) > 0 as needs_text_format
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_type t ON t.oid = a.atttypid
+            WHERE c.oid = $1::text::regclass::oid
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+              AND (t.typsend = 0 OR t.typreceive = 0)
+            "#,
+            &[&qualified_table_name],
+        )
+        .await?;
+    Ok(row.get("needs_text_format"))
 }
 
 async fn get_compressed_chunk(
