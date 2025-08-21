@@ -2,7 +2,7 @@ use crate::config::{
     TestConfig, TestConfigClean, TestConfigCopy, TestConfigRefreshCaggs, TestConfigStage,
     TestConfigVerify,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use assert_cmd::prelude::*;
 use diffy::{create_patch, PatchFormatter};
 use lazy_static::lazy_static;
@@ -232,7 +232,7 @@ pub fn copy_skeleton_schema<S: HasConnectionString, T: HasConnectionString>(
     source: S,
     target: T,
 ) -> Result<()> {
-    let pg_dump = Command::new("pg_dump")
+    let mut pg_dump = Command::new("pg_dump")
         .args(["-d", source.connection_string().as_str()])
         .args(["--format", "plain"])
         .args(["--exclude-table-data", "_timescaledb_internal.*"])
@@ -241,10 +241,13 @@ pub fn copy_skeleton_schema<S: HasConnectionString, T: HasConnectionString>(
         .arg("--no-owner")
         .arg("--no-privileges")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
 
-    let pg_dump_stdout = pg_dump.stdout.unwrap();
+    let pg_dump_stdout = pg_dump
+        .stdout
+        .take()
+        .ok_or(anyhow!("couldn't take stdout"))?;
 
     psql(
         &target,
@@ -255,9 +258,23 @@ pub fn copy_skeleton_schema<S: HasConnectionString, T: HasConnectionString>(
         .arg(target.connection_string().as_str())
         .stdin(Stdio::from(pg_dump_stdout))
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
 
-    restore.wait_with_output()?;
+    let restore_result = restore.wait_with_output()?;
+    if !restore_result.status.success() {
+        bail!(
+            "restore failed: {}",
+            String::from_utf8(restore_result.stderr)?
+        );
+    }
+    let pg_dump_result = pg_dump.wait_with_output()?;
+    if !pg_dump_result.status.success() {
+        bail!(
+            "pg dump failed: {}",
+            String::from_utf8(pg_dump_result.stderr)?
+        );
+    }
 
     psql(
         &target,
@@ -1725,6 +1742,8 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
     )?;
 
     copy_skeleton_schema(&source_container, &target_container)?;
+
+    // sleep(Duration::from_secs(100));
 
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
         .unwrap()
