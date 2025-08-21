@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.2](https://github.com/timescale/timescaledb-backfill/compare/v0.12.1...v0.12.2) (2025-08-21)
+
+
+### Bug Fixes
+
+* capture backtraces from panicking tasks ([4f722ac](https://github.com/timescale/timescaledb-backfill/commit/4f722accd4f65300356b44468096250afd5602db))
+
+
+### Miscellaneous
+
+* bail tests on failed dump/restore ([1466977](https://github.com/timescale/timescaledb-backfill/commit/1466977ddf248cb9de370c434c000d923eab3e8b))
+
 ## [0.12.1](https://github.com/timescale/timescaledb-backfill/compare/v0.12.0...v0.12.1) (2025-08-20)
 
 
