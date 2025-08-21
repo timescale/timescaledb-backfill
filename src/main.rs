@@ -14,7 +14,6 @@ use futures_lite::FutureExt;
 use human_repr::{HumanCount, HumanDuration};
 use once_cell::sync::Lazy;
 use std::backtrace::Backtrace;
-use std::cell::RefCell;
 use std::fmt::{self, Display, Formatter};
 use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
@@ -45,14 +44,10 @@ static CTRLC_COUNT: AtomicU32 = AtomicU32::new(0);
 
 static TERM: Lazy<Term> = Lazy::new(Term::stdout);
 
-thread_local! {
-    static BACKTRACE: RefCell<Option<Backtrace>> = RefCell::new(None);
-}
-
 #[derive(Debug)]
 struct PanicError {
     reason: String,
-    backtrace: Backtrace,
+    backtrace: Trace,
 }
 
 impl std::error::Error for PanicError {}
@@ -306,16 +301,41 @@ struct RefreshCaggsResult {
     refreshed_caggs: usize,
 }
 
+#[derive(Debug)]
+struct Trace {
+    id: Option<tokio::task::Id>,
+    panic_info: String,
+    backtrace: Backtrace,
+}
+
+impl Display for Trace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(id) = self.id {
+            writeln!(f, "Task {} {}", id, self.panic_info)?;
+        } else {
+            writeln!(f, "Thread {}", self.panic_info)?;
+        }
+        writeln!(f, "{}", self.backtrace)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
 
     let args = CliArgs::parse();
 
-    std::panic::set_hook(Box::new(|_| {
-        // Smuggle the backtrace on panic, see: https://stackoverflow.com/a/73711057/867412
-        let trace = Backtrace::force_capture();
-        BACKTRACE.with(move |b| b.borrow_mut().replace(trace));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Trace>();
+
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let backtrace = Backtrace::force_capture();
+        let id = tokio::task::try_id();
+        tx.send(Trace {
+            id,
+            panic_info: panic_info.to_string(),
+            backtrace,
+        })
+        .unwrap();
     }));
 
     let start = Instant::now();
@@ -323,8 +343,6 @@ async fn main() -> Result<()> {
     let command_result = match AssertUnwindSafe(run(&args)).catch_unwind().await {
         Ok(r) => r,
         Err(e) => {
-            let backtrace = BACKTRACE.with(|b| b.borrow_mut().take()).unwrap();
-
             // The content of the error is the object which was passed to
             // `panic!()`, so effectively it can be anything. It can always
             // be downcast to &str.
@@ -332,7 +350,7 @@ async fn main() -> Result<()> {
                 Ok(r) => (*r).to_string(),
                 Err(_) => String::from("unknown"),
             };
-            Err(anyhow!(PanicError { reason, backtrace }))
+            Err(anyhow!(reason))
         }
     };
 
@@ -353,7 +371,14 @@ async fn main() -> Result<()> {
     }
 
     if let Err(err) = command_result {
-        bail!(err);
+        let mut backtraces = vec![];
+        while let Ok(backtrace) = rx.try_recv() {
+            backtraces.push(backtrace.to_string());
+        }
+        if backtraces.is_empty() {
+            bail!(err);
+        }
+        bail!("{:?}\n{}", err, backtraces.join("\n"));
     }
 
     Ok(())
