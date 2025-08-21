@@ -175,7 +175,25 @@ impl Worker {
             },
             // Note: we spawn run_inner as a separate task, to prevent it from blocking this select.
             res = tokio::spawn(Self::run_inner(graceful_shutdown.clone(), source, target, task_count, task)) => {
-                res?
+                match res {
+                    Ok(r) => r,
+                    Err(join_error) => {
+                        if join_error.is_panic() {
+                            let panic_payload = join_error.into_panic();
+                            let err: String = {
+                                if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                    format!("Task panicked: {}", s)
+                                } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                    format!("Task panicked: {}", s)
+                                } else {
+                                    format!("Task panicked: {:?}", panic_payload)
+                                }
+                            };
+                            bail!(err)
+                        }
+                        Err(join_error.into())
+                    }
+                }
             }
         }
     }

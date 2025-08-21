@@ -334,22 +334,18 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
         stage_config = stage_config.with_starting_time(from);
     }
 
-    run_backfill(stage_config).unwrap().assert().success();
+    run_backfill(stage_config)?.assert().success();
 
-    run_backfill(TestConfigCopy::new(&source_container, &conn_tsdbadmin))
-        .unwrap()
+    run_backfill(TestConfigCopy::new(&source_container, &conn_tsdbadmin).with_parallel(1))?
         .assert()
         .success();
 
-    let mut source_dbassert = DbAssert::new(&source_container.connection_string())
-        .unwrap()
-        .with_name("source");
-    let mut target_dbassert = DbAssert::new(&conn_tsdbadmin.connection_string())
-        .unwrap()
-        .with_name("target");
+    let mut source_dbassert =
+        DbAssert::new(&source_container.connection_string())?.with_name("source");
+    let mut target_dbassert =
+        DbAssert::new(&conn_tsdbadmin.connection_string())?.with_name("target");
 
-    run_backfill(TestConfigVerify::new(&source_container, &conn_tsdbadmin))
-        .unwrap()
+    run_backfill(TestConfigVerify::new(&source_container, &conn_tsdbadmin))?
         .assert()
         .success()
         .stdout(contains("Chunk verification failed").not());
