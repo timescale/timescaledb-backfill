@@ -1068,8 +1068,13 @@ SELECT
     compressed_heap_size,
     compressed_toast_size,
     compressed_index_size,
-    numrows_pre_compression,
-    numrows_post_compression
+    -- The numrows_{pre,post}_compression columns were introduced
+    -- in TimescaleDB 2.0. The upgrade path does not populate default
+    -- values for older installations.
+    -- Ensure 0 is returned instead of NULL to avoid handling Option<>
+    -- in the struct.
+    COALESCE(numrows_pre_compression, 0) AS numrows_pre_compression,
+    COALESCE(numrows_post_compression, 0) AS numrows_post_compression
 FROM _timescaledb_catalog.compression_chunk_size s
 JOIN _timescaledb_catalog.chunk c ON c.id = s.compressed_chunk_id
 WHERE c.schema_name = $1 AND c.table_name = $2
