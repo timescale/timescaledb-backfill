@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/timescale/timescaledb-backfill/compare/v0.12.2...v0.12.3) (2025-08-25)
+
+
+### Bug Fixes
+
+* panic when compression stats have NULL row counts ([#177](https://github.com/timescale/timescaledb-backfill/issues/177)) ([42d11e3](https://github.com/timescale/timescaledb-backfill/commit/42d11e3c663943b40ec0cc612c465f1fac4c4148))
+
 ## [0.12.2](https://github.com/timescale/timescaledb-backfill/compare/v0.12.1...v0.12.2) (2025-08-21)
 
 
