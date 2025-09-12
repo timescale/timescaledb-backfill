@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.4](https://github.com/timescale/timescaledb-backfill/compare/v0.12.3...v0.12.4) (2025-09-12)
+
+
+### Bug Fixes
+
+* chunk_create during copy causes lock contention ([#181](https://github.com/timescale/timescaledb-backfill/issues/181)) ([8089ae4](https://github.com/timescale/timescaledb-backfill/commit/8089ae41cb529bac0bf1a6484d07a04ca6c33812))
+
+
+### Miscellaneous
+
+* **deps:** bump the dependencies group with 3 updates ([#179](https://github.com/timescale/timescaledb-backfill/issues/179)) ([71bdebc](https://github.com/timescale/timescaledb-backfill/commit/71bdebc4c12026c936573ecf3102cd5a83367610))
+
 ## [0.12.3](https://github.com/timescale/timescaledb-backfill/compare/v0.12.2...v0.12.3) (2025-08-25)
 
 
