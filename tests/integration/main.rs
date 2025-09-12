@@ -2584,35 +2584,25 @@ fn telemetry_captures_error_reason() -> Result<()> {
     ))
     .unwrap()
     .assert()
-    .success();
-
-    run_backfill(TestConfigCopy::new(&source_container, &target_container))
-        .unwrap()
-        .assert()
-        .failure()
-        .stderr(contains("Error: worker pool error").and(contains(
+    .failure()
+    .stderr(
+        contains("Error: db error: ERROR: table \"metrics\" is not a hypertable").and(contains(
             r#"Caused by:
-    0: worker execution error
-    1: db error: ERROR: table "metrics" is not a hypertable
-    2: ERROR: table "metrics" is not a hypertable"#,
-        )));
+    ERROR: table "metrics" is not a hypertable"#,
+        )),
+    );
 
     let mut target_dbassert = DbAssert::new(&target_container.connection_string())
         .unwrap()
         .with_name("target");
 
-    target_dbassert.has_telemetry(vec![
-        assert_stage_telemetry(5),
-        assert_error_telemetry(
-            "copy".into(),
-            vec![
-                "worker pool error",
-                "worker execution error",
-                r#"db error: ERROR: table "metrics" is not a hypertable"#,
-                r#"ERROR: table "metrics" is not a hypertable"#,
-            ],
-        ),
-    ]);
+    target_dbassert.has_telemetry(vec![assert_error_telemetry(
+        "stage".into(),
+        vec![
+            r#"db error: ERROR: table "metrics" is not a hypertable"#,
+            r#"ERROR: table "metrics" is not a hypertable"#,
+        ],
+    )]);
 
     Ok(())
 }

@@ -1,7 +1,10 @@
 use crate::connect::{Source, Target};
+use crate::execute::create_uncompressed_chunk;
 use crate::sql::assert_regex;
 use crate::storage::{backfill_schema_exists, init_schema};
-use crate::timescale::{set_query_source_proc_schema, Hypertable, SourceChunk, TargetChunk};
+use crate::timescale::{
+    set_query_source_proc_schema, Hypertable, QuotedName, SourceChunk, TargetChunk,
+};
 use crate::{features, TERM};
 use anyhow::{bail, Result};
 use std::collections::HashSet;
@@ -19,8 +22,8 @@ pub enum TaskType {
 pub struct Task {
     pub priority: i64,
     pub source_chunk: SourceChunk,
-    pub target_chunk: Option<TargetChunk>,
     pub filter: Option<String>,
+    #[allow(dead_code)]
     pub snapshot: Option<String>,
 }
 
@@ -45,13 +48,9 @@ pub async fn claim_task(target_tx: &Transaction<'_>, claim_query: &str) -> Resul
             let filter: Option<String> = row.get("filter");
             let snapshot: Option<String> = row.get("snapshot");
 
-            let target_chunk =
-                find_target_chunk_with_same_dimensions(target_tx, &source_chunk).await?;
-
             Ok(Some(Task {
                 priority,
                 source_chunk,
-                target_chunk,
                 filter,
                 snapshot,
             }))
@@ -73,7 +72,7 @@ pub async fn claim_verify_task(target_tx: &Transaction<'_>) -> Result<Option<Ver
 pub async fn find_target_chunk_with_same_dimensions(
     target_tx: &Transaction<'_>,
     source_chunk: &SourceChunk,
-) -> Result<Option<TargetChunk>> {
+) -> Result<TargetChunk> {
     static FIND_TARGET_CHUNK: &str = include_str!("find_target_chunk.sql");
 
     let row = target_tx
@@ -87,15 +86,21 @@ pub async fn find_target_chunk_with_same_dimensions(
         )
         .await?;
 
-    Ok(row.map(|row| TargetChunk {
-        schema: row.get("chunk_schema"),
-        table: row.get("chunk_name"),
-        hypertable: Hypertable {
-            schema: row.get("hypertable_schema"),
-            table: row.get("hypertable_name"),
-        },
-        dimensions: source_chunk.dimensions.clone(),
-    }))
+    match row {
+        Some(row) => Ok(TargetChunk {
+            schema: row.get("chunk_schema"),
+            table: row.get("chunk_name"),
+            hypertable: Hypertable {
+                schema: row.get("hypertable_schema"),
+                table: row.get("hypertable_name"),
+            },
+            dimensions: source_chunk.dimensions.clone(),
+        }),
+        None => bail!(
+            "target chunk for {} not found - staging failed or chunk was deleted",
+            source_chunk.quoted_name()
+        ),
+    }
 }
 
 pub async fn complete_copy_task(
@@ -235,6 +240,8 @@ pub async fn load_queue(
         let chunk_name: &str = row.get("chunk_name");
         let hypertable_schema: &str = row.get("hypertable_schema");
         let hypertable_name: &str = row.get("hypertable_name");
+        let dimensions: String = row.get("dimensions");
+
         let row = target_tx
             .query_opt(
                 &stmt,
@@ -243,7 +250,7 @@ pub async fn load_queue(
                     &chunk_name,
                     &hypertable_schema,
                     &hypertable_name,
-                    &row.get::<&str, String>("dimensions"),
+                    &dimensions,
                     &row.get::<&str, Option<String>>("filter"),
                     &snapshot,
                 ],
@@ -255,6 +262,30 @@ pub async fn load_queue(
         if row.is_none() {
             debug!("Task for chunk \"{chunk_schema}\".\"{chunk_name}\" of hypertable \"{hypertable_schema}\".\"{hypertable_name}\" already exists; skipping");
             skipped_chunks += 1;
+        } else {
+            let source_chunk = SourceChunk {
+                schema: chunk_schema.to_string(),
+                table: chunk_name.to_string(),
+                hypertable: Hypertable {
+                    schema: hypertable_schema.to_string(),
+                    table: hypertable_name.to_string(),
+                },
+                dimensions: serde_json::from_str(&dimensions)?,
+            };
+
+            // Ensure target chunk exists, create if it doesn't
+            if find_target_chunk_with_same_dimensions(&target_tx, &source_chunk)
+                .await
+                .is_err()
+            {
+                // Target chunk doesn't exist, create it
+                let target_chunk = create_uncompressed_chunk(&target_tx, &source_chunk).await?;
+                debug!(
+                    "Created target chunk {} for source chunk {}",
+                    target_chunk.quoted_name(),
+                    source_chunk.quoted_name()
+                );
+            }
         }
     }
     source_tx.rollback().await?;

@@ -1,5 +1,8 @@
 use crate::timescale::QuotedName;
-use crate::{execute::chunk_exists, task::VerifyTask};
+use crate::{
+    execute::chunk_exists,
+    task::{find_target_chunk_with_same_dimensions, VerifyTask},
+};
 use anyhow::{bail, Ok, Result};
 use diffy::{create_patch, PatchFormatter};
 use serde::Serialize;
@@ -158,17 +161,10 @@ pub async fn verify_chunk_data(
         )));
     }
 
-    let target_chunk = verify_task
-        .target_chunk
-        .as_ref()
-        .ok_or_else(|| VerificationError::new("target chunk does not exist"))?;
+    let target_chunk = find_target_chunk_with_same_dimensions(target_tx, &verify_task.source_chunk)
+        .await
+        .map_err(|e| VerificationError::new(&format!("target chunk does not exist: {e}")))?;
     let target_table = target_chunk.quoted_name();
-
-    if !chunk_exists(target_tx, target_chunk).await? {
-        bail!(VerificationError::new(&format!(
-            "target chunk {target_table} no longer exists"
-        ),));
-    }
 
     let summary_query_select_columns =
         fetch_summary_query_select_columns(target_tx, &target_table).await?;

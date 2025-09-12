@@ -6,7 +6,7 @@ use crate::timescale::{
     SourceChunk, SourceCompressedChunk, TargetChunk, TargetCompressedChunk,
 };
 use crate::{features, sql};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use futures_util::pin_mut;
@@ -31,10 +31,8 @@ pub async fn copy_chunk(
     target_tx: &Transaction<'_>,
     task: &CopyTask,
 ) -> Result<CopyResult> {
-    let target_chunk = match task.target_chunk.as_ref() {
-        Some(target_chunk) => target_chunk.clone(),
-        None => create_uncompressed_chunk(target_tx, &task.source_chunk).await?,
-    };
+    let target_chunk =
+        find_target_chunk_with_same_dimensions(target_tx, &task.source_chunk).await?;
 
     let source_chunk_compressed = is_chunk_compressed(source_tx, &task.source_chunk).await?;
 
@@ -573,7 +571,7 @@ async fn get_compressed_chunk(
 
 /// Creates a Chunk in the same Hypertable and with the same slices as the
 /// given Chunk.
-async fn create_uncompressed_chunk(
+pub async fn create_uncompressed_chunk(
     tx: &Transaction<'_>,
     source_chunk: &SourceChunk,
 ) -> Result<TargetChunk> {
@@ -599,9 +597,7 @@ async fn create_uncompressed_chunk(
     )
     .await?;
 
-    find_target_chunk_with_same_dimensions(tx, source_chunk)
-        .await?
-        .ok_or_else(|| anyhow!("couldn't retrieve recently created chunk"))
+    find_target_chunk_with_same_dimensions(tx, source_chunk).await
 }
 
 /// Creates a compressed chunk data table. The table is created in the given

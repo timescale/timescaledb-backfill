@@ -110,7 +110,7 @@ SELECT
     )",
                 )
                 .await?;
-            let conninfo: String = match rows.get(0) {
+            let conninfo: String = match rows.first() {
                 Some(SimpleQueryMessage::Row(row)) => row
                     .get(0)
                     .map_or_else(String::new, std::borrow::ToOwned::to_owned),
