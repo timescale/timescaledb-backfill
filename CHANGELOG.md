@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/timescale/timescaledb-backfill/compare/v0.12.4...v0.12.5) (2025-09-29)
+
+
+### Miscellaneous
+
+* add chunk name into the copy failure message ([#182](https://github.com/timescale/timescaledb-backfill/issues/182)) ([3b696fc](https://github.com/timescale/timescaledb-backfill/commit/3b696fc1a566142950d1e3c17c15b3c74e2e660d))
+
 ## [0.12.4](https://github.com/timescale/timescaledb-backfill/compare/v0.12.3...v0.12.4) (2025-09-12)
 
 
