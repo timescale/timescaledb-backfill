@@ -254,7 +254,8 @@ impl Worker {
                             copy_task.source_chunk.quoted_name()
                         )
                     } else {
-                        let copy_result = copy_chunk(&source_tx, &target_tx, &copy_task).await?;
+                        let copy_result = copy_chunk(&source_tx, &target_tx, &copy_task).await
+                            .with_context(|| format!("failed to copy chunk {}", copy_task.source_chunk.quoted_name()))?;
 
                         let elapsed = start.elapsed();
                         let throughput = if copy_result.bytes == 0 {
@@ -315,7 +316,11 @@ impl Worker {
                         ),
                         Err(error) => match error.downcast_ref::<VerificationError>() {
                             Some(e) => format!("{}", e),
-                            None => bail!(error),
+                            None => bail!(
+                                "failed to verify chunk {}: {}",
+                                verify_task.source_chunk.quoted_name(),
+                                error
+                            ),
                         },
                     };
                 complete_verify_task(&target_tx, &verify_task, &verify_message).await?;
