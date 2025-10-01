@@ -66,7 +66,7 @@ jobs:
           gh release upload ${{ needs.release-please.outputs.tag_name }} ${TARFILE_NAME}
 
       - name: Configure aws credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::818196790983:role/upload-releases-to-assets.timescale.com
           aws-region: us-east-1
