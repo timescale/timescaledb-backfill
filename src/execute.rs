@@ -194,6 +194,33 @@ async fn create_compressed_chunk_from_source_chunk(
     Ok(result)
 }
 
+/// Creates a compressed chunk structure without copying data.
+/// This is used during staging to pre-create compressed chunks, avoiding lock
+/// contention during the copy phase.
+pub async fn create_compressed_chunk_without_data(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    source_compressed_chunk: &SourceCompressedChunk,
+    target_uncompressed_chunk: &TargetChunk,
+) -> Result<TargetCompressedChunk> {
+    let target_compressed_chunk_data_table = create_compressed_chunk_data_table(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        target_uncompressed_chunk,
+    )
+    .await?;
+    create_compressed_chunk_from_data_table(
+        source_tx,
+        target_tx,
+        source_compressed_chunk,
+        target_uncompressed_chunk,
+        &target_compressed_chunk_data_table,
+    )
+    .await?;
+    Ok(target_compressed_chunk_data_table)
+}
+
 async fn hss_uncompressed_rows(source_tx: &Transaction<'_>, chunk: &SourceChunk) -> Result<bool> {
     let row = source_tx
         .query_one(
@@ -545,7 +572,7 @@ async fn table_requires_text_format(
     Ok(row.get("needs_text_format"))
 }
 
-async fn get_compressed_chunk(
+pub async fn get_compressed_chunk(
     source_tx: &Transaction<'_>,
     chunk: &Chunk,
 ) -> Result<Option<SourceCompressedChunk>> {
