@@ -119,11 +119,10 @@ pub async fn find_target_chunk_with_same_dimensions(
             },
             dimensions: source_chunk.dimensions.clone(),
         }),
-        None => Err(ChunkNotFoundError::new(format!(
+        None => bail!(ChunkNotFoundError::new(format!(
             "target chunk for {} not found - staging failed or chunk was deleted",
             source_chunk.quoted_name()
-        ))
-        .into()),
+        ))),
     }
 }
 
