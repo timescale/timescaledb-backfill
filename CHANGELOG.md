@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.6](https://github.com/timescale/timescaledb-backfill/compare/v0.12.5...v0.12.6) (2025-10-09)
+
+
+### Bug Fixes
+
+* compressed chunk creation during copy causes lock contention ([#185](https://github.com/timescale/timescaledb-backfill/issues/185)) ([f0c3457](https://github.com/timescale/timescaledb-backfill/commit/f0c34573b0166db1524d710e9ea3288f0db69d10))
+
 ## [0.12.5](https://github.com/timescale/timescaledb-backfill/compare/v0.12.4...v0.12.5) (2025-09-29)
 
 
