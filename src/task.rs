@@ -1,5 +1,7 @@
 use crate::connect::{Source, Target};
-use crate::execute::create_uncompressed_chunk;
+use crate::execute::{
+    create_compressed_chunk_without_data, create_uncompressed_chunk, get_compressed_chunk,
+};
 use crate::sql::assert_regex;
 use crate::storage::{backfill_schema_exists, init_schema};
 use crate::timescale::{
@@ -8,6 +10,8 @@ use crate::timescale::{
 use crate::{features, TERM};
 use anyhow::{bail, Result};
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
 use tokio_postgres::error::SqlState;
 use tokio_postgres::{Client, Config, GenericClient, Transaction};
 use tracing::debug;
@@ -17,6 +21,25 @@ pub enum TaskType {
     Copy,
     Verify,
 }
+
+#[derive(Debug)]
+pub struct ChunkNotFoundError {
+    message: String,
+}
+
+impl ChunkNotFoundError {
+    pub fn new(message: String) -> Self {
+        ChunkNotFoundError { message }
+    }
+}
+
+impl fmt::Display for ChunkNotFoundError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl Error for ChunkNotFoundError {}
 
 #[derive(Debug)]
 pub struct Task {
@@ -96,10 +119,10 @@ pub async fn find_target_chunk_with_same_dimensions(
             },
             dimensions: source_chunk.dimensions.clone(),
         }),
-        None => bail!(
+        None => bail!(ChunkNotFoundError::new(format!(
             "target chunk for {} not found - staging failed or chunk was deleted",
             source_chunk.quoted_name()
-        ),
+        ))),
     }
 }
 
@@ -274,17 +297,48 @@ pub async fn load_queue(
             };
 
             // Ensure target chunk exists, create if it doesn't
-            if find_target_chunk_with_same_dimensions(&target_tx, &source_chunk)
-                .await
-                .is_err()
+            let target_chunk =
+                match find_target_chunk_with_same_dimensions(&target_tx, &source_chunk).await {
+                    Ok(chunk) => chunk,
+                    Err(e) => match e.downcast_ref::<ChunkNotFoundError>() {
+                        Some(_) => {
+                            // Target chunk doesn't exist, create it
+                            let target_chunk =
+                                create_uncompressed_chunk(&target_tx, &source_chunk).await?;
+                            debug!(
+                                "Created target chunk {} for source chunk {}",
+                                target_chunk.quoted_name(),
+                                source_chunk.quoted_name()
+                            );
+                            target_chunk
+                        }
+                        None => return Err(e),
+                    },
+                };
+
+            // If source chunk is compressed, ensure target compressed chunk exists
+            if let Some(source_compressed_chunk) =
+                get_compressed_chunk(&source_tx, &source_chunk).await?
             {
-                // Target chunk doesn't exist, create it
-                let target_chunk = create_uncompressed_chunk(&target_tx, &source_chunk).await?;
-                debug!(
-                    "Created target chunk {} for source chunk {}",
-                    target_chunk.quoted_name(),
-                    source_chunk.quoted_name()
-                );
+                // Check if target compressed chunk already exists
+                if get_compressed_chunk(&target_tx, &target_chunk)
+                    .await?
+                    .is_none()
+                {
+                    // Target compressed chunk doesn't exist, create it
+                    let target_compressed_chunk = create_compressed_chunk_without_data(
+                        &source_tx,
+                        &target_tx,
+                        &source_compressed_chunk,
+                        &target_chunk,
+                    )
+                    .await?;
+                    debug!(
+                        "Created target compressed chunk {} for source chunk {}",
+                        target_compressed_chunk.quoted_name(),
+                        source_chunk.quoted_name()
+                    );
+                }
             }
         }
     }

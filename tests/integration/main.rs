@@ -834,7 +834,7 @@ generate_tests!(
                 target
                     .has_table_count("public", "metrics", 120)
                     .has_chunk_count("public", "metrics", 5)
-                    .has_compressed_chunk_count("public", "metrics", 1)
+                    .has_compressed_chunk_count("public", "metrics", 2)
                     .has_telemetry(vec![
                         assert_stage_telemetry(tasks),
                         assert_copy_telemetry(tasks),
@@ -2921,29 +2921,24 @@ fn panic_on_copy_if_source_has_compressed_chunk_not_present_in_target_with_diffe
         psql(&source_container, sql)?;
     }
 
-    let stage_config =
-        TestConfigStage::new(&source_container, &conn_tsdbadmin, "2023-07-01T00:00:00");
-
-    run_backfill(stage_config).unwrap().assert().success();
-
-    // When running the copy the operation.
-    let result = run_backfill(TestConfigCopy::new(&source_container, &conn_tsdbadmin))
-        .unwrap()
-        .assert()
-        .failure();
+    // When running the stage operation with mismatched compression settings.
+    let result = run_backfill(TestConfigStage::new(
+        &source_container,
+        &conn_tsdbadmin,
+        "2023-07-01T00:00:00",
+    ))
+    .unwrap()
+    .assert()
+    .failure();
 
     // Then an error will be raised because the backfill tool needs to create
-    // the new compressed chunk, but the compression settings for the
+    // the new compressed chunk during staging, but the compression settings for the
     // hypertable in target are different than the chunk's compression settings
     // in the source.
     result.stderr(
         contains(
-            "failed to copy chunk"
-        ).and(contains(
-            r#"failed to create compressed chunk "_timescaledb_internal"."compress_hyper_2_7_chunk" for hypertable "public"."metrics""#
-        )).and(contains(
             "Compression settings mismatch."
-        )).and(contains(
+        ).and(contains(
             "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk'"
         )).and(contains(
             "in source are different than the settings for the hypertable 'public.metrics'"
