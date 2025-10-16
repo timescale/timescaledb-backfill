@@ -79,7 +79,7 @@ pub fn storage_type_in_create_table() -> bool {
 pub fn mutation_of_compressed_hypertables() -> bool {
     *MUTATION_OF_COMPRESSED_HYPERTABLES
         .get()
-        .expect("STORAGE_TYPE_IN_CREATE_TABLE is not set")
+        .expect("MUTATION_OF_COMPRESSED_HYPERTABLES is not set")
 }
 
 // Supported from TS >= 2.17.0

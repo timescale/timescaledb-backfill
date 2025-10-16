@@ -41,6 +41,13 @@ pub async fn copy_chunk(
     // Note: we must check the compression status in this transaction to ensure correctness.
     if task.filter.is_some() && source_chunk_compressed {
         let target_chunk_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
+        // We must decompress the target chunk if it's compressed, otherwise
+        // DELETING uncompressed rows will never delete anything
+        // on the compressed chunk.
+        // For example, `SELECT * FROM chunk WHERE time > '2023-01-01'` will
+        // decompress the chunk on-the-fly, but the DELETE will not.
+        // Note: This behavior has been fixed in TimescaleDB 2.23.
+        // See: https://github.com/timescale/timescaledb/pull/8704
         if target_chunk_compressed {
             warn!(
                 "Completion filter is within a compressed chunk, decompressing chunk {}",
