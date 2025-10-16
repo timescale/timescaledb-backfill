@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/timescale/timescaledb-backfill/compare/v0.12.6...v0.13.0) (2025-10-16)
+
+
+### Features
+
+* support timescale 2.22 ([756b85c](https://github.com/timescale/timescaledb-backfill/commit/756b85cb30facbffd7090992063d40f6ff72cd93))
+
+
+### Miscellaneous
+
+* fix typos and add comments to improve readability ([#188](https://github.com/timescale/timescaledb-backfill/issues/188)) ([6566308](https://github.com/timescale/timescaledb-backfill/commit/656630821a8835f54d39487b8ce6e16e5e943a4d))
+
 ## [0.12.6](https://github.com/timescale/timescaledb-backfill/compare/v0.12.5...v0.12.6) (2025-10-09)
 
 
