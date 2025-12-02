@@ -23,7 +23,7 @@ jobs:
       files: ${{ steps.filter.outputs.files }}
     steps:
       - name: Setup | Checkout submodules
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
