@@ -94,7 +94,7 @@ The tool creates a `__backfill` administrative schema in the target database to 
 ### Cargo.toml Features
 - Release builds use LTO and single codegen unit for optimization
 - Debug symbols included in release builds
-- Specific Rust toolchain: 1.72.0
+- Specific Rust toolchain: 1.85.0
 
 ### CI/CD
 - GitHub Actions workflow in `.github/workflows/ci.yaml`
