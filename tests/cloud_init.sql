@@ -147,62 +147,29 @@ END
 $do$;
 
 DO $$
-DECLARE
-  typname text;
 BEGIN
-  -- TimescaleDB 2.15 renamed _timescaledb_internal.job_errors => _timescaledb_internal.bgw_job_stat_history
-  IF COALESCE(pg_catalog.to_regclass('_timescaledb_internal.job_errors'),
-              pg_catalog.to_regclass('_timescaledb_internal.bgw_job_stat_history')) IS NOT NULL THEN
-    -- We need to ensure the policy job for error retention is owned by the database owner
-    -- The job having id 2 initially is hardcoded in the TimescaleDB code base:
-    -- https://github.com/timescale/timescaledb/blob/7a6101a441ca4ad02018ffddd225e7abdea4385f/sql/job_error_log_retention.sql#L60
-    -- in TimescaleDB 2.15 the job for the policy_job_error_retention has been left on id 2,
-    -- policy_job_stat_history_retention got the id 3:
-    -- https://github.com/timescale/timescaledb/commit/e298ecd532f40214a0d20a90a37b51b53aa23e91
-
-    SELECT
-      pg_catalog.format_type(atttypid, atttypmod)
-    INTO STRICT
-      typname
-    FROM
-      pg_catalog.pg_attribute
-    WHERE
-      attrelid = '_timescaledb_config.bgw_job'::regclass
-      AND attname = 'owner';
-
-    -- In TimescaleDB 2.10.2 the data type of the column changed. This in turn requires a different sql
-    -- statement to run depending on what datatype the column is
-    IF typname = 'regrole' THEN
+  IF pg_catalog.to_regclass('_timescaledb_internal.bgw_job_stat_history') IS NOT NULL THEN
+    -- In TimescaleDB 2.23+ bgw_job became a view; the UPDATE and pg_attribute
+    -- lookup only work when it is still a plain table.
+    IF (SELECT relkind FROM pg_catalog.pg_class WHERE oid = '_timescaledb_config.bgw_job'::regclass) = 'r' THEN
+      -- Ensure the error-retention policy job is owned by tsdbadmin.
+      -- The job having id 2 initially is hardcoded in the TimescaleDB code base:
+      -- https://github.com/timescale/timescaledb/blob/7a6101a441ca4ad02018ffddd225e7abdea4385f/sql/job_error_log_retention.sql#L60
+      -- in TimescaleDB 2.15 the job for the policy_job_error_retention has been left on id 2,
+      -- policy_job_stat_history_retention got the id 3:
+      -- https://github.com/timescale/timescaledb/commit/e298ecd532f40214a0d20a90a37b51b53aa23e91
       UPDATE
           _timescaledb_config.bgw_job
       SET
         owner = 'tsdbadmin'::regrole
       WHERE
-        -- TimescaleDB 2.15 introduced job id 3 for the policy_job_stat_history_retention.
         id in (2, 3)
         AND owner != 'tsdbadmin'::regrole
-        AND proc_name IN ('policy_job_error_retention', 'policy_job_stat_history_retention')
-        -- The procedure schema changes from ts2.12.0 onwards, so we check for both
-        -- old and new names
-        AND proc_schema IN ('_timescaledb_internal', '_timescaledb_functions');
-    ELSE
-      UPDATE
-          _timescaledb_config.bgw_job
-      SET
-        owner = 'tsdbadmin'
-      WHERE
-        id = 2
-        AND owner != 'tsdbadmin'
         AND proc_name IN ('policy_job_error_retention', 'policy_job_stat_history_retention')
         AND proc_schema IN ('_timescaledb_internal', '_timescaledb_functions');
     END IF;
 
-      -- tsdbadmin should also be allowed to purge/clean the job errors
-    IF pg_catalog.to_regclass('_timescaledb_internal.job_errors') IS NOT NULL THEN
-      GRANT DELETE ON _timescaledb_internal.job_errors TO tsdbadmin;
-    ELSE
-      GRANT DELETE ON _timescaledb_internal.bgw_job_stat_history TO tsdbadmin;
-    END IF;
+    GRANT DELETE ON _timescaledb_internal.bgw_job_stat_history TO tsdbadmin;
   END IF;
 END;
 $$;
@@ -210,29 +177,33 @@ $$;
 -- we need to block manually inserting or changing the owner field of the jobs timescale catalog, to avoid
 -- a job running as a superuser or a user the current_user is not a member of. Otherwise, we may get privileges
 -- escalation. Check the trigger is not disabled and is BEFORE ROW INSERT or UPDATE (tgtype controls that) one.
+-- In TimescaleDB 2.23+ bgw_job became a view, which cannot have row-level triggers, so skip this.
 DO $$
   BEGIN
-    IF NOT EXISTS(
-        SELECT 1
-        FROM pg_catalog.pg_trigger
-        WHERE tgname = 'validate_job_role_trigger'
-          AND tgrelid = '_timescaledb_config.bgw_job'::regclass::oid
-          AND tgfoid = 'public.validate_job_role()'::regprocedure::oid
-          AND tgenabled IN ('O', 'A') AND tgtype = 23
-    )
-    THEN
-      -- see the comment at the function creation about avoiding a confusing error message
-      IF EXISTS(
-        SELECT 1 FROM pg_catalog.pg_trigger
-        WHERE tgname = 'validate_job_role_trigger'
+    -- Only create the trigger if bgw_job is a table (not a view)
+    IF (SELECT relkind FROM pg_catalog.pg_class WHERE oid = '_timescaledb_config.bgw_job'::regclass) = 'r' THEN
+      IF NOT EXISTS(
+          SELECT 1
+          FROM pg_catalog.pg_trigger
+          WHERE tgname = 'validate_job_role_trigger'
+            AND tgrelid = '_timescaledb_config.bgw_job'::regclass::oid
+            AND tgfoid = 'public.validate_job_role()'::regprocedure::oid
+            AND tgenabled IN ('O', 'A') AND tgtype = 23
       )
       THEN
-        RAISE EXCEPTION 'Trigger validate_job_role_trigger is already defined by the user'
-          USING HINT='Drop the trigger and retry';
+        -- see the comment at the function creation about avoiding a confusing error message
+        IF EXISTS(
+          SELECT 1 FROM pg_catalog.pg_trigger
+          WHERE tgname = 'validate_job_role_trigger'
+        )
+        THEN
+          RAISE EXCEPTION 'Trigger validate_job_role_trigger is already defined by the user'
+            USING HINT='Drop the trigger and retry';
+        END IF;
+        CREATE TRIGGER validate_job_role_trigger
+          BEFORE INSERT OR UPDATE ON _timescaledb_config.bgw_job
+          FOR EACH ROW EXECUTE FUNCTION public.validate_job_role();
       END IF;
-      CREATE TRIGGER validate_job_role_trigger
-        BEFORE INSERT OR UPDATE ON _timescaledb_config.bgw_job
-        FOR EACH ROW EXECUTE FUNCTION public.validate_job_role();
     END IF;
   END
 $$;
@@ -309,11 +280,6 @@ DO $$
       -- - grantee exists (if not, it will raise an exception)
       -- - job_table exists (otherwise, it will return NULL)
       -- - SELECT privs are missing
-      -- 2.15 renamed job_errors => bgw_job_stat_history, we try both, since IF will not proceed when the table is not there.
-      IF NOT pg_catalog.has_table_privilege('tsdbadmin', pg_catalog.to_regclass('_timescaledb_internal.job_errors'), 'SELECT WITH GRANT OPTION')
-      THEN
-        GRANT SELECT ON _timescaledb_internal.job_errors TO tsdbadmin WITH GRANT OPTION;
-      END IF;
       IF NOT pg_catalog.has_table_privilege('tsdbadmin', pg_catalog.to_regclass('_timescaledb_internal.bgw_job_stat_history'), 'SELECT WITH GRANT OPTION')
       THEN
         GRANT SELECT ON _timescaledb_internal.bgw_job_stat_history TO tsdbadmin WITH GRANT OPTION;

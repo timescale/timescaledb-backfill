@@ -345,8 +345,8 @@ pub async fn report_telemetry(telemetry: &Telemetry) -> Result<()> {
 mod test {
     use crate::telemetry::fetch_db_uuid;
     use anyhow::Result;
-    use test_common::PgVersion::PG15;
-    use test_common::TsVersion::TS216;
+    use test_common::PgVersion::PG17;
+    use test_common::TsVersion::TS226;
     use test_common::{postgres, timescaledb, HasConnectionString};
     use testcontainers::clients::Cli;
     use tokio::task::JoinHandle;
@@ -374,7 +374,7 @@ mod test {
         let _ = pretty_env_logger::try_init();
 
         let docker = Cli::default();
-        let source_container = docker.run(timescaledb(PG15, TS216));
+        let source_container = docker.run(timescaledb(PG17, TS226));
         let mut connected = connect(&source_container).await?;
 
         let result = fetch_db_uuid(&mut connected.client).await;
@@ -400,7 +400,7 @@ mod test {
         let _ = pretty_env_logger::try_init();
 
         let docker = Cli::default();
-        let source_container = docker.run(postgres(PG15));
+        let source_container = docker.run(postgres(PG17));
         let mut connected = connect(&source_container).await?;
 
         let result = fetch_db_uuid(&mut connected.client).await;

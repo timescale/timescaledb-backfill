@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
-use test_common::TsVersion::{TS217, TS218};
+use test_common::TsVersion::{TS225, TS226};
 use test_common::*;
 use testcontainers::clients::Cli;
 use tracing::debug;
@@ -203,7 +203,7 @@ fn ts_version() -> TsVersion {
     env::var("BF_TEST_TS_VERSION")
         .ok()
         .map(TsVersion::from)
-        .unwrap_or(TS217)
+        .unwrap_or(TS226)
 }
 
 /// Spawns a backfill process with the specified test configuration [`TestConfig`],
@@ -1536,12 +1536,21 @@ fn ctrl_c_stops_gracefully() -> Result<()> {
 
     let mut tapped_stdout = Tap::new(child.stdout.take().unwrap());
 
-    wait_for_message_in_output(&mut tapped_stdout, "Copying uncompressed chunk")?;
+    if let Err(e) = wait_for_message_in_output(&mut tapped_stdout, "Copying uncompressed chunk") {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
 
-    let mut kill = Command::new("kill")
+    let kill_result = Command::new("kill")
         .args(["-s", "INT", &child.id().to_string()])
-        .spawn()?;
-    kill.wait()?;
+        .spawn()
+        .and_then(|mut k| k.wait());
+    if let Err(e) = kill_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e.into());
+    }
 
     let mut output = child.wait_with_output().unwrap();
 
@@ -1570,8 +1579,8 @@ fn abort_on_mismatching_timescaledb_version() -> Result<()> {
 
     let docker = Cli::default();
 
-    let source_container = docker.run(timescaledb(pg_version(), TS217));
-    let target_container = docker.run(timescaledb(pg_version(), TS218));
+    let source_container = docker.run(timescaledb(pg_version(), TS225));
+    let target_container = docker.run(timescaledb(pg_version(), TS226));
 
     psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
     psql(
