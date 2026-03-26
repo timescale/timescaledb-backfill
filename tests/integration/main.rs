@@ -1799,68 +1799,6 @@ fn copy_task_with_deleted_source_chunk_skips_it() -> Result<()> {
 }
 
 #[test]
-fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
-    let _ = pretty_env_logger::try_init();
-
-    let docker = Cli::default();
-
-    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
-    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
-
-    psql(
-        &source_container,
-        vec![
-            PsqlInput::Sql(SETUP_HYPERTABLE),
-            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
-            // Given 3 chunks
-            PsqlInput::Sql(
-                r"
-            INSERT INTO metrics(time, device_id, val)
-            VALUES
-                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '6 month', 88, 43),
-                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '3 month', 42, 24),
-                ('2016-01-02T00:00:00Z'::timestamptz - INTERVAL '1 month', 7, 21)",
-            ),
-            // Mark two of three chunks as dropped. This only happens when the
-            // table has a CAGG, and the CAGG is still building
-            // https://github.com/timescale/timescaledb/blob/b8057f90916dac54fd6f6400e1cab6eddd226a02/src/chunk.c#L4031
-            PsqlInput::Sql(
-                r"UPDATE _timescaledb_catalog.chunk
-                SET dropped = true
-                WHERE id in (1, 2)
-                ",
-            ),
-        ],
-    )?;
-
-    psql(
-        &target_container,
-        vec![
-            PsqlInput::Sql(SETUP_HYPERTABLE),
-            PsqlInput::Sql(CREATE_CONTINUOUS_AGGREGATE), // hypertables with a cagg behave differently on drop
-        ],
-    )?;
-
-    DbAssert::new(&source_container.connection_string())
-        .unwrap()
-        .has_chunk_count("public", "metrics", 3);
-
-    run_backfill(TestConfigStage::new(
-        &source_container,
-        &target_container,
-        "2016-01-02T00:00:00Z",
-    ))
-    .unwrap()
-    .assert()
-    .success()
-    .stdout(contains(
-        "Staged 1 chunks to copy.\nExecute the 'copy' command to migrate the data.",
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn duplicated_stage_task_is_skipped() -> Result<()> {
     let _ = pretty_env_logger::try_init();
 

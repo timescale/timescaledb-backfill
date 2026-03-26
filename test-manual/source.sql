@@ -365,7 +365,6 @@ begin
         inner join _timescaledb_catalog.chunk_constraint cc on (c.id = cc.chunk_id)
         inner join _timescaledb_catalog.dimension_slice ds on (cc.dimension_slice_id = ds.id and ds.dimension_id = d.id)
         where h.compression_state = 1 -- compression enabled
-        and c.dropped is false
         and c.compressed_chunk_id is null
         and _timescaledb_internal.to_timestamp(ds.range_start) < _start + (interval '1 day' * _compress_days)
         order by _timescaledb_internal.to_timestamp(ds.range_start)
