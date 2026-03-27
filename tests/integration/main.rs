@@ -1642,6 +1642,7 @@ fn wait_for_message_in_output<T: Read>(output: &mut T, message: &str) -> Result<
 // further investigation.
 #[cfg(not(target_os = "macos"))]
 #[test]
+#[allow(clippy::zombie_processes)]
 fn double_ctrl_c_stops_hard() -> Result<()> {
     let _ = pretty_env_logger::try_init();
 
@@ -1686,6 +1687,12 @@ fn double_ctrl_c_stops_hard() -> Result<()> {
         .args(["-s", "INT", &child.id().to_string()])
         .spawn()?;
     kill.wait()?;
+
+    // Wait for the graceful shutdown message before sending the second SIGINT,
+    // otherwise the two signals can coalesce before the async runtime
+    // re-registers the signal handler.
+    wait_for_message_in_output(&mut tapped_stdout, "Shutting down")?;
+
     let mut kill = Command::new("kill")
         .args(["-s", "INT", &child.id().to_string()])
         .spawn()?;
