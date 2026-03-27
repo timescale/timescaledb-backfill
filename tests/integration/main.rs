@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
-use test_common::TsVersion::{TS225, TS226};
+use test_common::TsVersion::{TS223, TS225, TS226};
 use test_common::*;
 use testcontainers::clients::Cli;
 use tracing::debug;
@@ -646,12 +646,17 @@ generate_tests!(
                     dbassert
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
-                        .has_cagg_mt_chunk_count("public", "cagg", 1)
-                        .has_table_count(
+                        .has_cagg_mt_chunk_count("public", "cagg", 1);
+                    // TS >= 2.23 removed the cagg invalidation trigger; invalidation
+                    // is now tracked inline in the executor, so DML on chunks produces
+                    // invalidation log entries that we cannot suppress.
+                    if ts_version() < TS223 {
+                        dbassert.has_table_count(
                             "_timescaledb_catalog",
                             "continuous_aggs_hypertable_invalidation_log",
                             0,
                         );
+                    }
                 }
                 let tasks = 6;
                 target.has_telemetry(vec![
