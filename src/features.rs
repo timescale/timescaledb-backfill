@@ -11,11 +11,13 @@ static MUTATION_OF_COMPRESSED_HYPERTABLES: OnceLock<bool> = OnceLock::new();
 static NO_SEQUENCE_NUMBER_IN_COMPRESSED_HYPERTABLES: OnceLock<bool> = OnceLock::new();
 static COMPRESSION_SETTINGS_WITH_COMPRESS_RELID: OnceLock<bool> = OnceLock::new();
 static HYPERCORE_TAM: OnceLock<bool> = OnceLock::new();
+static CAGG_INVALIDATION_TRIGGER: OnceLock<bool> = OnceLock::new();
 
 pub async fn initialize_features(target: &Target) -> Result<()> {
     let ts_version = &Version::parse(&fetch_tsdb_version(&target.client).await?)?;
     let pg_version = fetch_pg_version_number(&target.client).await?;
 
+    let ts_lt_223 = VersionReq::parse("<2.23.0").unwrap().matches(ts_version);
     let ts_lt_222 = VersionReq::parse("<2.22.0").unwrap().matches(ts_version);
     let ts_ge_219 = VersionReq::parse(">=2.19.0").unwrap().matches(ts_version);
     let ts_ge_218 = VersionReq::parse(">=2.18.0").unwrap().matches(ts_version);
@@ -58,6 +60,10 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     HYPERCORE_TAM
         .set(ts_ge_218 && ts_lt_222)
         .map_err(|e| anyhow!("HYPERCORE_TAM already set to {}", e))?;
+
+    CAGG_INVALIDATION_TRIGGER
+        .set(ts_lt_223)
+        .map_err(|e| anyhow!("CAGG_INVALIDATION_TRIGGER already set to {}", e))?;
     Ok(())
 }
 
@@ -99,4 +105,11 @@ pub fn compression_settings_with_compress_relid() -> bool {
 // Supported from TS >= 2.18.0 to < 2.22.0
 pub fn hypercore_tam() -> bool {
     *HYPERCORE_TAM.get().expect("HYPERCORE_TAM is not set")
+}
+
+// Supported from TS < 2.23.0
+pub fn cagg_invalidation_trigger() -> bool {
+    *CAGG_INVALIDATION_TRIGGER
+        .get()
+        .expect("CAGG_INVALIDATION_TRIGGER is not set")
 }

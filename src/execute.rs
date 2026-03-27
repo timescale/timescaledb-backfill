@@ -304,7 +304,11 @@ async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
 ) -> Result<CopyResult> {
     debug!("Copying uncompressed chunk {}", source_table.quoted_name());
 
-    let trigger_dropped = drop_invalidation_trigger(target_tx, &target_table.quoted_name()).await?;
+    let trigger_dropped = if features::cagg_invalidation_trigger() {
+        drop_invalidation_trigger(target_tx, &target_table.quoted_name()).await?
+    } else {
+        false
+    };
 
     if let Some(filter) = filter {
         delete_data_using_filter(target_tx, target_table, filter).await?;
@@ -443,7 +447,11 @@ async fn copy_compressed_chunk_data(
 ) -> Result<CopyResult> {
     debug!("Copying compressed chunk {}", source_chunk.quoted_name());
 
-    let trigger_dropped = drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
+    let trigger_dropped = if features::cagg_invalidation_trigger() {
+        drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?
+    } else {
+        false
+    };
 
     let copy_result = copy_chunk_from_source_to_target(
         source_tx,
