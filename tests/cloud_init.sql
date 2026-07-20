@@ -290,13 +290,15 @@ DO $$
 
     -- The telemetry events table is intended for application data (like cli tools)
     -- that should be included in telemetry.
-    IF EXISTS (
-      SELECT FROM pg_tables
-      WHERE schemaname = '_timescaledb_catalog'
-        AND tablename = 'telemetry_event'
-    ) THEN
-      GRANT INSERT ON TABLE _timescaledb_catalog.telemetry_event TO tsdbadmin;
-    END IF;
+    -- TimescaleDB removed this catalog table from core around 2.23; Tiger Cloud
+    -- still provisions it (backfill writes telemetry to it), so recreate it here
+    -- to simulate the cloud environment.
+    CREATE TABLE IF NOT EXISTS _timescaledb_catalog.telemetry_event (
+        created timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        tag name NOT NULL,
+        body jsonb NOT NULL
+    );
+    GRANT INSERT ON TABLE _timescaledb_catalog.telemetry_event TO tsdbadmin;
 
     -- We should allow the creation of new chunk tables within the _timescaledb_internal schema using pg_restore.
     -- Although we could implement an event trigger to specifically filter chunk tables, this may be unnecessary since

@@ -371,6 +371,25 @@ fn configure_cloud_setup<C: HasConnectionString>(container: &C) -> Result<()> {
     Ok(())
 }
 
+/// Tiger Cloud provisions `_timescaledb_catalog.telemetry_event`, which
+/// TimescaleDB removed from core in 2.26. Backfill writes telemetry to this
+/// table (on the target) only when it exists, so tests that assert telemetry
+/// must provision it to exercise the feature on newer versions. On older
+/// versions the table already exists and `IF NOT EXISTS` makes this a no-op.
+fn provision_telemetry_event<C: HasConnectionString>(container: &C) -> Result<()> {
+    psql(
+        &container,
+        PsqlInput::Sql(
+            "CREATE TABLE IF NOT EXISTS _timescaledb_catalog.telemetry_event (
+                created timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                tag name NOT NULL,
+                body jsonb NOT NULL
+            )",
+        ),
+    )?;
+    Ok(())
+}
+
 generate_tests!(
     (
         copy_data_from_chunks,
@@ -1427,6 +1446,7 @@ fn copy_without_available_tasks_error() -> Result<()> {
 
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+    provision_telemetry_event(&target_container)?;
 
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -1807,6 +1827,13 @@ fn stage_skips_chunks_marked_as_dropped() -> Result<()> {
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
+    // Dropped-chunk tombstones only exist while the catalog has a `dropped`
+    // column (removed in TS 2.26). Newer versions delete dropped chunks from the
+    // catalog outright, so there is nothing for `stage` to skip.
+    if !chunk_has_dropped_column(&source_container.connection_string())? {
+        return Ok(());
+    }
+
     psql(
         &source_container,
         vec![
@@ -2051,6 +2078,7 @@ fn verify_task_with_extra_rows_in_source() -> Result<()> {
 
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+    provision_telemetry_event(&target_container)?;
 
     // Given a chunk that's staged and copied
     stage_and_copy_a_single_chunk(&source_container, &target_container)?;
@@ -2270,6 +2298,7 @@ where
         PsqlInput::File(PathBuf::from("tests/source_schema.sql")),
     )?;
     copy_skeleton_schema(&source_container, &target_container)?;
+    provision_telemetry_event(&target_container)?;
 
     let mut source_dbassert = DbAssert::new(&source_container.connection_string())
         .unwrap()
@@ -2568,6 +2597,7 @@ fn telemetry_captures_error_reason() -> Result<()> {
     psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
 
     copy_skeleton_schema(&source_container, &target_container)?;
+    provision_telemetry_event(&target_container)?;
 
     psql(&target_container, PsqlInput::Sql("drop table metrics"))?;
     psql(
