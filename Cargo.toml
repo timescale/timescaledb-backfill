@@ -3,6 +3,9 @@ name = "timescaledb-backfill"
 version = "0.13.0"
 edition = "2021"
 
+[workspace]
+members = ["test-common"]
+
 [profile.release]
 debug = 1
 lto = true
@@ -46,5 +49,5 @@ pretty_env_logger = "0.5.0"
 reqwest = "0.11.22"
 tap-reader = "1.0.1"
 testcontainers = "0.14.0"
-test-common = { git = "ssh://git@github.com/timescale/test-common.git", rev = "v0.22.0"}
+test-common = { path = "test-common" }
 strip-ansi-escapes = "0.2.0"
