@@ -212,6 +212,14 @@ $$;
 -- escalation. Check the trigger is not disabled and is BEFORE ROW INSERT or UPDATE (tgtype controls that) one.
 DO $$
   BEGIN
+    -- In TimescaleDB 2.23+ bgw_job became a view, which cannot have row-level
+    -- triggers, so skip this.
+    IF (SELECT relkind
+        FROM pg_catalog.pg_class
+        WHERE oid = '_timescaledb_config.bgw_job'::regclass) <> 'r'
+    THEN
+      RETURN;
+    END IF;
     IF NOT EXISTS(
         SELECT 1
         FROM pg_catalog.pg_trigger

@@ -5,7 +5,8 @@ use crate::execute::{
 use crate::sql::assert_regex;
 use crate::storage::{backfill_schema_exists, init_schema};
 use crate::timescale::{
-    set_query_source_proc_schema, Hypertable, QuotedName, SourceChunk, TargetChunk,
+    set_query_chunk_catalog, set_query_source_proc_schema, Hypertable, QuotedName, SourceChunk,
+    TargetChunk,
 };
 use crate::{features, TERM};
 use anyhow::{bail, Result};
@@ -97,10 +98,11 @@ pub async fn find_target_chunk_with_same_dimensions(
     source_chunk: &SourceChunk,
 ) -> Result<TargetChunk> {
     static FIND_TARGET_CHUNK: &str = include_str!("find_target_chunk.sql");
+    let find_target_chunk = set_query_chunk_catalog(FIND_TARGET_CHUNK);
 
     let row = target_tx
         .query_opt(
-            FIND_TARGET_CHUNK,
+            &find_target_chunk,
             &[
                 &source_chunk.hypertable.schema,
                 &source_chunk.hypertable.table,
@@ -206,7 +208,7 @@ pub async fn load_queue(
 
     let target_tx = target.client.transaction().await?;
     static FIND_SOURCE_CHUNKS: &str = include_str!("find_source_chunks.sql");
-    let query = set_query_source_proc_schema(FIND_SOURCE_CHUNKS);
+    let query = set_query_chunk_catalog(&set_query_source_proc_schema(FIND_SOURCE_CHUNKS));
     let source_tx = source.transaction().await?;
 
     let rows = match source_tx

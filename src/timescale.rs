@@ -67,6 +67,47 @@ pub fn set_query_target_proc_schema(query: &str) -> String {
     query.replace(EXTSCHEMA, schema)
 }
 
+/// Lateral join that resolves a chunk's `relid` to its `schema`/`table` for the
+/// relid catalog (TS >= 2.29). It assumes the chunk table is aliased `c`.
+const CHUNK_RELID_JOIN: &str = "
+inner join lateral (
+    select nc.nspname, clc.relname
+    from pg_class clc
+    join pg_namespace nc on nc.oid = clc.relnamespace
+    where clc.oid = c.relid
+) chunk_rel on true";
+
+/// Fills in the chunk-catalog placeholders in a query so it targets either the
+/// pre-relid catalog (`schema_name`/`table_name`/`dropped` columns) or the
+/// relid catalog (TS >= 2.29, where the chunk relation is resolved from
+/// `relid`). The chunk table must be aliased `c`.
+///
+/// Placeholders:
+/// - `@chunk_schema@` / `@chunk_name@`: the chunk's schema/table expressions
+/// - `@chunk_relid_join@`: join that exposes them in the relid catalog
+/// - `@dropped_filter@`: the `dropped = false` filter, absent in the relid
+///   catalog (dropped chunks are removed from it)
+pub fn set_query_chunk_catalog(query: &str) -> String {
+    let (chunk_schema, chunk_name, chunk_relid_join) =
+        if crate::features::chunk_catalog_uses_relid() {
+            ("chunk_rel.nspname", "chunk_rel.relname", CHUNK_RELID_JOIN)
+        } else {
+            ("c.schema_name", "c.table_name", "")
+        };
+    // The `dropped` column was removed before the relid change, so it is gated
+    // independently.
+    let dropped_filter = if crate::features::chunk_has_dropped_column() {
+        "where c.dropped = false"
+    } else {
+        ""
+    };
+    query
+        .replace("@chunk_schema@", chunk_schema)
+        .replace("@chunk_name@", chunk_name)
+        .replace("@chunk_relid_join@", chunk_relid_join)
+        .replace("@dropped_filter@", dropped_filter)
+}
+
 pub async fn fetch_tsdb_version<T: GenericClient>(client: &T) -> Result<String> {
     let tsdb_version = client
         .query_one(
