@@ -81,9 +81,14 @@ jobs:
       fail-fast: false
       matrix:
         pgversion: [17]
-        tsversion: ["2.17", "2.18", "2.19", "2.20", "2.21", "2.22"]
+        tsversion: ["2.17", "2.18", "2.19", "2.20", "2.21", "2.22", "2.23", "2.24", "2.25", "2.26", "2.27", "2.28", "nightly"]
 
     runs-on: ubuntu-latest
+    # 2.17-2.22 are fully green and gate merges. Newer releases and the nightly
+    # (2.29) build are exercised but non-blocking: they surface regressions in
+    # CI without failing the gate while their remaining test-harness gaps (e.g.
+    # the cagg invalidation-log assertion on 2.28+) are worked through.
+    continue-on-error: ${{ !contains(fromJSON('["2.17", "2.18", "2.19", "2.20", "2.21", "2.22"]'), matrix.tsversion) }}
     steps:
       - name: Setup | Checkout
         uses: actions/checkout@v6
