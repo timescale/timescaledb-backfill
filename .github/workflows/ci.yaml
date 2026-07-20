@@ -80,10 +80,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The latest release of each TimescaleDB minor version running in Tiger
+        # Cloud, plus the nightly (2.29) build.
         pgversion: [17]
-        tsversion: ["2.21", "2.22", "2.23", "2.24", "2.25", "2.26"]
+        tsversion: ["2.22", "2.23", "2.24", "2.25", "2.26", "2.27", "2.28", "nightly"]
 
     runs-on: ubuntu-latest
+    # The nightly build tracks an unreleased version and can break for unrelated
+    # reasons, so it is exercised but non-blocking.
+    continue-on-error: ${{ matrix.tsversion == 'nightly' }}
     steps:
       - name: Setup | Checkout
         uses: actions/checkout@v6
