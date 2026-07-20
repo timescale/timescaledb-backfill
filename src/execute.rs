@@ -243,15 +243,20 @@ async fn chunk_status_is_partial(
     target_chunk: &TargetChunk,
 ) -> Result<bool> {
     // Note: status is a bitfield, the 4th bit indicates whether the chunk is partially compressed
-    let row = target_tx
-        .query_one(
-            r"
+    let query = if features::chunk_catalog_uses_relid() {
+        r"
+        SELECT (status & 8)::bool as is_partial
+        FROM _timescaledb_catalog.chunk
+        WHERE relid = to_regclass(format('%I.%I', $1::text, $2::text))"
+    } else {
+        r"
         SELECT (status & 8)::bool as is_partial
         FROM _timescaledb_catalog.chunk
         WHERE schema_name = $1
-          AND table_name = $2",
-            &[&target_chunk.schema, &target_chunk.table],
-        )
+          AND table_name = $2"
+    };
+    let row = target_tx
+        .query_one(query, &[&target_chunk.schema, &target_chunk.table])
         .await?;
     Ok(row.get("is_partial"))
 }
@@ -392,23 +397,31 @@ async fn drop_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> Re
 
 async fn create_invalidation_trigger(tx: &Transaction<'_>, chunk_name: &str) -> Result<()> {
     debug!("Creating invalidation trigger on '{chunk_name}'");
-    let hypertable_id: i32 = tx
-        .query_one(
-            r"
+    // Note: In the pre-relid catalog there is non-obvious stuff going on here.
+    // The ::text::regclass::text cast dance reformats the relation name to the
+    // database's canonical format. We _explicitly avoid_ casting the left hand
+    // side to regclass, because the _timescaledb_catalog.chunk table contains
+    // entries which refer to non-existent relations. This only happens when the
+    // hypertable has a continuous aggregate on it, and the chunk was dropped.
+    // Casting the non-existent relation to regclass throws an error.
+    //
+    // In the relid catalog (TS >= 2.29) dropped chunks are removed from the
+    // catalog and `relid` is never null, so we can match on it directly.
+    let query = if features::chunk_catalog_uses_relid() {
+        r"
         SELECT hypertable_id
         FROM _timescaledb_catalog.chunk
-        -- Note: There is non-obvious stuff going on here.
-        -- The ::text::regclass::text cast dance reformats the relation name to
-        -- the database's canonical format. We _explicitly avoid_ casting the
-        -- left hand side to regclass, because the _timescaledb_catalog.chunk
-        -- table contains entries which refer to non-existent relations. This
-        -- only happens when the hypertable has a continuous aggregate on it,
-        -- and the chunk was dropped.
-        -- Casting the non-existent relation to regclass throws an error.
+        WHERE relid = $1::text::regclass
+    "
+    } else {
+        r"
+        SELECT hypertable_id
+        FROM _timescaledb_catalog.chunk
         WHERE format('%I.%I', schema_name, table_name)::text = $1::text::regclass::text
-    ",
-            &[&chunk_name],
-        )
+    "
+    };
+    let hypertable_id: i32 = tx
+        .query_one(query, &[&chunk_name])
         .await?
         .get("hypertable_id");
 
@@ -591,9 +604,23 @@ pub async fn get_compressed_chunk(
     source_tx: &Transaction<'_>,
     chunk: &Chunk,
 ) -> Result<Option<SourceCompressedChunk>> {
-    let row = source_tx
-        .query_opt(
-            r#"
+    // In the relid catalog (TS >= 2.29) compressed chunks are no longer chunk
+    // rows. The compressed relation for a chunk is found through
+    // `compression_settings.compress_relid` (only present for compressed
+    // chunks, so an uncompressed chunk yields no row).
+    let query = if features::chunk_catalog_uses_relid() {
+        r#"
+    SELECT
+      n.nspname AS schema_name
+    , cl.relname AS table_name
+    FROM _timescaledb_catalog.chunk ch
+    JOIN _timescaledb_catalog.compression_settings cs ON cs.relid = ch.relid
+    JOIN pg_class cl ON cl.oid = cs.compress_relid
+    JOIN pg_namespace n ON n.oid = cl.relnamespace
+    WHERE ch.relid = to_regclass(format('%I.%I', $1::text, $2::text))
+    "#
+    } else {
+        r#"
     SELECT
       cch.schema_name
     , cch.table_name
@@ -601,9 +628,10 @@ pub async fn get_compressed_chunk(
     JOIN _timescaledb_catalog.chunk cch ON ch.compressed_chunk_id = cch.id
     WHERE ch.schema_name = $1
       AND ch.table_name = $2
-    "#,
-            &[&chunk.schema, &chunk.table],
-        )
+    "#
+    };
+    let row = source_tx
+        .query_opt(query, &[&chunk.schema, &chunk.table])
         .await?;
     Ok(row.map(|r| SourceCompressedChunk {
         schema: r.get("schema_name"),
@@ -820,6 +848,17 @@ async fn create_compressed_chunk_index(
         .await;
     }
 
+    // Newer TimescaleDB (~2.28) stores the compressed sparse-index metadata in
+    // `_ts_meta_v2_first_<col>` / `_ts_meta_v2_last_<col>` columns (named after
+    // the orderby column) and indexes those, instead of the older
+    // `_ts_meta_min_<n>` / `_ts_meta_max_<n>` columns (indexed by position).
+    // Some versions keep both column sets, so we detect the v2 columns on the
+    // data table (a copy of the source compressed chunk) rather than gate on a
+    // version, and prefer them to match what TimescaleDB itself builds.
+    let use_v2_metadata = compressed_chunk_uses_v2_metadata(target_tx, qualified_data_table_name)
+        .await
+        .context("failed to detect compressed chunk metadata format")?;
+
     let mut index_columns: Vec<String> = compression_settings
         .segmentby
         .clone()
@@ -827,8 +866,8 @@ async fn create_compressed_chunk_index(
         .map(|c| quote_ident(c))
         .collect();
 
-    // Add min/max columns for orderby settings
-    for (i, _) in compression_settings.orderby.iter().enumerate() {
+    // Add the metadata columns for the orderby settings
+    for (i, orderby_column) in compression_settings.orderby.iter().enumerate() {
         let column_index = i + 1; // 1-based indexing as in C code
         let order_by = if compression_settings.orderby_desc[i] {
             // DESC ordering
@@ -849,10 +888,19 @@ async fn create_compressed_chunk_index(
                 "ASC"
             }
         };
-        let min_column = quote_ident(&format!("_ts_meta_min_{}", column_index));
-        let max_column = quote_ident(&format!("_ts_meta_max_{}", column_index));
-        index_columns.push(format!("{min_column} {order_by}"));
-        index_columns.push(format!("{max_column} {order_by}"));
+        let (first_column, last_column) = if use_v2_metadata {
+            (
+                quote_ident(&format!("_ts_meta_v2_first_{orderby_column}")),
+                quote_ident(&format!("_ts_meta_v2_last_{orderby_column}")),
+            )
+        } else {
+            (
+                quote_ident(&format!("_ts_meta_min_{column_index}")),
+                quote_ident(&format!("_ts_meta_max_{column_index}")),
+            )
+        };
+        index_columns.push(format!("{first_column} {order_by}"));
+        index_columns.push(format!("{last_column} {order_by}"));
     }
 
     let quoted_index_columns_list: String = index_columns
@@ -868,6 +916,28 @@ async fn create_compressed_chunk_index(
         .await
         .with_context(|| "failed to create compress chunk index")?;
     Ok(())
+}
+
+/// Detects whether a compressed chunk data table uses the v2 sparse-index
+/// metadata columns (`_ts_meta_v2_first_<col>` / `_ts_meta_v2_last_<col>`).
+async fn compressed_chunk_uses_v2_metadata(
+    tx: &Transaction<'_>,
+    qualified_data_table_name: &str,
+) -> Result<bool> {
+    let row = tx
+        .query_one(
+            r"
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_attribute
+                WHERE attrelid = $1::text::regclass
+                  AND attname ~ '^_ts_meta_v2_first_'
+                  AND NOT attisdropped
+            )",
+            &[&qualified_data_table_name],
+        )
+        .await?;
+    Ok(row.get(0))
 }
 
 async fn fetch_compressed_chunk_compression_settings(
@@ -918,11 +988,21 @@ struct CompressionSettings {
 
 impl From<Row> for CompressionSettings {
     fn from(row: Row) -> Self {
+        // In the relid catalog (TS >= 2.29) the hypertable-level
+        // `compression_settings` row only stores explicitly-configured values,
+        // leaving defaulted columns (e.g. the default time `orderby`) NULL. The
+        // per-chunk rows still materialize them. Treat NULL as empty.
+        fn col(row: &Row, name: &str) -> Vec<String> {
+            row.get::<_, Option<Vec<String>>>(name).unwrap_or_default()
+        }
+        fn flags(row: &Row, name: &str) -> Vec<bool> {
+            row.get::<_, Option<Vec<bool>>>(name).unwrap_or_default()
+        }
         CompressionSettings {
-            segmentby: row.get("segmentby"),
-            orderby: row.get("orderby"),
-            orderby_desc: row.get("orderby_desc"),
-            orderby_nullsfirst: row.get("orderby_nullsfirst"),
+            segmentby: col(&row, "segmentby"),
+            orderby: col(&row, "orderby"),
+            orderby_desc: flags(&row, "orderby_desc"),
+            orderby_nullsfirst: flags(&row, "orderby_nullsfirst"),
         }
     }
 }
@@ -951,7 +1031,22 @@ async fn validate_and_fetch_compression_settings(
     );
     let source_settings =
         fetch_compressed_chunk_compression_settings(source_tx, source_chunk_name).await?;
-    if source_settings != target_settings {
+
+    // In the relid catalog (TS >= 2.29) the hypertable-level settings omit a
+    // defaulted `orderby`, while the source chunk carries the materialized
+    // settings. Consider them compatible when the segment-by columns match and
+    // the target either shares the same explicit `orderby` or relies on the
+    // default (empty), which matches the source chunk's materialized default.
+    let compatible = if features::chunk_catalog_uses_relid() {
+        source_settings.segmentby == target_settings.segmentby
+            && (target_settings.orderby.is_empty()
+                || (source_settings.orderby == target_settings.orderby
+                    && source_settings.orderby_desc == target_settings.orderby_desc
+                    && source_settings.orderby_nullsfirst == target_settings.orderby_nullsfirst))
+    } else {
+        source_settings == target_settings
+    };
+    if !compatible {
         bail!(
             r"Compression settings mismatch.
 
@@ -970,7 +1065,15 @@ backfilled, you can change the settings back and restart the compression jobs.
         );
     }
 
-    Ok(target_settings)
+    // The compressed chunk data table (and its index) must reflect the
+    // materialized layout of the actual compressed data. Pre-2.29 the hypertable
+    // settings already were materialized; in the relid catalog we must use the
+    // source chunk's settings so a defaulted `orderby` is not lost.
+    if features::chunk_catalog_uses_relid() {
+        Ok(source_settings)
+    } else {
+        Ok(target_settings)
+    }
 }
 
 /// Adds the backfill prefix `COMPRESS_TABLE_NAME_PREFIX` to the table name.
@@ -1096,9 +1199,17 @@ async fn fetch_compression_size(
     tx: &Transaction<'_>,
     compressed_chunk: &SourceCompressedChunk,
 ) -> Result<CompressionSize> {
-    let row = tx
-        .query_one(
-            r#"
+    // The numrows_{pre,post}_compression columns were introduced in TimescaleDB
+    // 2.0. The upgrade path does not populate default values for older
+    // installations. Ensure 0 is returned instead of NULL to avoid handling
+    // Option<> in the struct.
+    //
+    // In the relid catalog (TS >= 2.29) `compression_chunk_size` is keyed by the
+    // uncompressed chunk's `chunk_id` (the `compressed_chunk_id` column is dead),
+    // so we reach it from the compressed relation through
+    // `compression_settings.compress_relid`.
+    let query = if features::chunk_catalog_uses_relid() {
+        r#"
 SELECT
     uncompressed_heap_size,
     uncompressed_toast_size,
@@ -1106,19 +1217,31 @@ SELECT
     compressed_heap_size,
     compressed_toast_size,
     compressed_index_size,
-    -- The numrows_{pre,post}_compression columns were introduced
-    -- in TimescaleDB 2.0. The upgrade path does not populate default
-    -- values for older installations.
-    -- Ensure 0 is returned instead of NULL to avoid handling Option<>
-    -- in the struct.
+    COALESCE(numrows_pre_compression, 0) AS numrows_pre_compression,
+    COALESCE(numrows_post_compression, 0) AS numrows_post_compression
+FROM _timescaledb_catalog.compression_chunk_size s
+JOIN _timescaledb_catalog.chunk c ON c.id = s.chunk_id
+JOIN _timescaledb_catalog.compression_settings cs ON cs.relid = c.relid
+WHERE cs.compress_relid = to_regclass(format('%I.%I', $1::text, $2::text))
+        "#
+    } else {
+        r#"
+SELECT
+    uncompressed_heap_size,
+    uncompressed_toast_size,
+    uncompressed_index_size,
+    compressed_heap_size,
+    compressed_toast_size,
+    compressed_index_size,
     COALESCE(numrows_pre_compression, 0) AS numrows_pre_compression,
     COALESCE(numrows_post_compression, 0) AS numrows_post_compression
 FROM _timescaledb_catalog.compression_chunk_size s
 JOIN _timescaledb_catalog.chunk c ON c.id = s.compressed_chunk_id
 WHERE c.schema_name = $1 AND c.table_name = $2
-        "#,
-            &[&compressed_chunk.schema, &compressed_chunk.table],
-        )
+        "#
+    };
+    let row = tx
+        .query_one(query, &[&compressed_chunk.schema, &compressed_chunk.table])
         .await?;
 
     Ok(CompressionSize {
@@ -1137,14 +1260,27 @@ pub async fn chunk_exists<T>(client: &T, chunk: &Chunk) -> Result<bool>
 where
     T: GenericClient,
 {
-    let query: &str = r#"
+    // In the relid catalog (TS >= 2.29) the relation is matched by `relid`;
+    // `to_regclass` yields NULL for a non-existent relation, so the comparison
+    // is simply never true.
+    let query: &str = if features::chunk_catalog_uses_relid() {
+        r#"
+SELECT EXISTS (
+  SELECT 1
+  FROM _timescaledb_catalog.chunk
+  WHERE relid = to_regclass(format('%I.%I', $1::text, $2::text))
+)
+"#
+    } else {
+        r#"
 SELECT EXISTS (
   SELECT 1
   FROM _timescaledb_catalog.chunk
   WHERE schema_name = $1
     AND table_name = $2
 )
-"#;
+"#
+    };
     let exists = client
         .query_one(query, &[&chunk.schema, &chunk.table])
         .await?;

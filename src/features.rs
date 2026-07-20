@@ -12,11 +12,20 @@ static NO_SEQUENCE_NUMBER_IN_COMPRESSED_HYPERTABLES: OnceLock<bool> = OnceLock::
 static COMPRESSION_SETTINGS_WITH_COMPRESS_RELID: OnceLock<bool> = OnceLock::new();
 static HYPERCORE_TAM: OnceLock<bool> = OnceLock::new();
 static CAGG_INVALIDATION_TRIGGER: OnceLock<bool> = OnceLock::new();
+static CHUNK_CATALOG_USES_RELID: OnceLock<bool> = OnceLock::new();
 
 pub async fn initialize_features(target: &Target) -> Result<()> {
-    let ts_version = &Version::parse(&fetch_tsdb_version(&target.client).await?)?;
+    let mut ts_version = Version::parse(&fetch_tsdb_version(&target.client).await?)?;
+    // Nightly builds report a prerelease version (e.g. `2.29.0-dev`). By semver
+    // rules a prerelease only satisfies a comparator that itself carries a
+    // prerelease with the same major.minor.patch, so a plain `>=X.Y.Z` would
+    // match none of the checks below. Drop the prerelease so a nightly is
+    // treated as its target release for feature gating.
+    ts_version.pre = semver::Prerelease::EMPTY;
+    let ts_version = &ts_version;
     let pg_version = fetch_pg_version_number(&target.client).await?;
 
+    let ts_ge_229 = VersionReq::parse(">=2.29.0").unwrap().matches(ts_version);
     let ts_lt_223 = VersionReq::parse("<2.23.0").unwrap().matches(ts_version);
     let ts_lt_222 = VersionReq::parse("<2.22.0").unwrap().matches(ts_version);
     let ts_ge_219 = VersionReq::parse(">=2.19.0").unwrap().matches(ts_version);
@@ -64,6 +73,10 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     CAGG_INVALIDATION_TRIGGER
         .set(ts_lt_223)
         .map_err(|e| anyhow!("CAGG_INVALIDATION_TRIGGER already set to {}", e))?;
+
+    CHUNK_CATALOG_USES_RELID
+        .set(ts_ge_229)
+        .map_err(|e| anyhow!("CHUNK_CATALOG_USES_RELID already set to {}", e))?;
     Ok(())
 }
 
@@ -112,4 +125,15 @@ pub fn cagg_invalidation_trigger() -> bool {
     *CAGG_INVALIDATION_TRIGGER
         .get()
         .expect("CAGG_INVALIDATION_TRIGGER is not set")
+}
+
+// Starting with TS 2.29 the `_timescaledb_catalog.chunk` table stores the
+// chunk's relation as a `relid` (regclass) instead of the `schema_name` /
+// `table_name` pair and no longer tracks `compressed_chunk_id`. The compressed
+// relation for a chunk is found through `compression_settings.compress_relid`
+// and its size through `compression_chunk_size.chunk_id`.
+pub fn chunk_catalog_uses_relid() -> bool {
+    *CHUNK_CATALOG_USES_RELID
+        .get()
+        .expect("CHUNK_CATALOG_USES_RELID is not set")
 }

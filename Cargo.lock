@@ -1988,8 +1988,8 @@ checksum = "3369f5ac52d5eb6ab48c6b4ffdc8efbcad6b89c765749064ba298f2c68a16a76"
 
 [[package]]
 name = "test-common"
-version = "0.23.1"
-source = "git+ssh://git@github.com/timescale/test-common.git?rev=v0.23.1#2af856e2dadc134b7df26d97e46dc1f8ceefe296"
+version = "0.24.0"
+source = "git+ssh://git@github.com/timescale/test-common.git?rev=737f8774db26678f9935018f3b7c629b7ef10300#737f8774db26678f9935018f3b7c629b7ef10300"
 dependencies = [
  "assert_cmd",
  "assert_fs",

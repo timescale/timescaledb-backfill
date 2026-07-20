@@ -96,8 +96,8 @@ with recursive f as
     from down
 )
 select
-  c.schema_name as chunk_schema
-, c.table_name as chunk_name
+  @chunk_schema@ as chunk_schema
+, @chunk_name@ as chunk_name
 , h.schema_name as hypertable_schema
 , h.table_name as hypertable_name
 , (
@@ -185,5 +185,6 @@ inner join _timescaledb_catalog.dimension_slice ds
 on (d.id = ds.dimension_id and ds.range_start < d.upper_value and (d.lower_value is null or d.lower_value < ds.range_end))
 inner join _timescaledb_catalog.chunk_constraint cc on (ds.id = cc.dimension_slice_id)
 inner join _timescaledb_catalog.chunk c on (cc.chunk_id = c.id and h.id = c.hypertable_id)
+@chunk_relid_join@
 order by ds.range_start desc
 ;
