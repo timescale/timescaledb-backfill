@@ -1429,7 +1429,6 @@ fn copy_without_stage_error() -> Result<()> {
 
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
-    provision_telemetry_event(&target_container)?;
 
     run_backfill(
         TestConfigCopy::new(&source_container, &target_container),
@@ -1452,6 +1451,7 @@ fn copy_without_available_tasks_error() -> Result<()> {
 
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+    provision_telemetry_event(&target_container)?;
 
     run_backfill(TestConfigStage::new(
         &source_container,
@@ -2917,18 +2917,38 @@ fn panic_on_copy_if_source_has_compressed_chunk_not_present_in_target_with_diffe
     // the new compressed chunk during staging, but the compression settings for the
     // hypertable in target are different than the chunk's compression settings
     // in the source.
-    result.stderr(
-        contains(
-            "Compression settings mismatch."
-        ).and(contains(
-            "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk'"
-        )).and(contains(
-            "in source are different than the settings for the hypertable 'public.metrics'"
-        )).and(contains(
-            r#"- SOURCE: CompressionSettings { segmentby: ["device_id", "label"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#
-        )).and(contains(
-            r#"- TARGET: CompressionSettings { segmentby: ["device_id"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#
+    //
+    let settings = contains("Compression settings mismatch.")
+        .and(contains(
+            "in source are different than the settings for the hypertable 'public.metrics'",
+        ))
+        .and(contains(
+            r#"- SOURCE: CompressionSettings { segmentby: ["device_id", "label"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#,
+        ))
+        .and(contains(
+            r#"- TARGET: CompressionSettings { segmentby: ["device_id"], orderby: ["time"], orderby_desc: [false], orderby_nullsfirst: [false] }"#,
+        ));
+
+    // TS >= 2.29 (relid catalog) names compressed chunks
+    // `_hyper_<ht>_<id>_chunk_compressed` (by an id we can't predict here)
+    // instead of `compress_hyper_<ht>_<id>_chunk`; the settings themselves are
+    // reported identically.
+    let mut ts = Version::parse(&get_ts_version(&source_container.connection_string())?)?;
+    ts.pre = semver::Prerelease::EMPTY;
+    let relid_catalog = VersionReq::parse(">=2.29.0").unwrap().matches(&ts);
+    if relid_catalog {
+        result.stderr(
+            settings
+                .and(contains(
+                    "Compression settings for the compressed chunk '_timescaledb_internal.",
+                ))
+                .and(contains("_chunk_compressed'")),
+        );
+    } else {
+        result.stderr(settings.and(contains(
+            "Compression settings for the compressed chunk '_timescaledb_internal.compress_hyper_2_7_chunk'",
         )));
+    }
 
     Ok(())
 }
