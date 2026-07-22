@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.14.0](https://github.com/timescale/timescaledb-backfill/compare/v0.13.0...v0.14.0) (2026-07-22)
+
+
+### Features
+
+* support timescaledb 2.29 relid chunk catalog ([21ac8c7](https://github.com/timescale/timescaledb-backfill/commit/21ac8c7edffa619c142d29ffc6a62b00a1400158))
+
+
+### Bug Fixes
+
+* prevent signal coalescing in double_ctrl_c_stops_hard test ([b60c244](https://github.com/timescale/timescaledb-backfill/commit/b60c24458a77b6a97f05fe17afb446aac96eb688))
+* remove dropped column references for TimescaleDB 2.26.0 compat ([44fe9c3](https://github.com/timescale/timescaledb-backfill/commit/44fe9c31eafd4f3e0dd923218fb366651dae1c1f))
+* skip cagg invalidation trigger management for TimescaleDB &gt;= 2.23.0 ([b03b254](https://github.com/timescale/timescaledb-backfill/commit/b03b254ab9b50c437d277b177b7debe0610d9d6d))
+
+
+### Miscellaneous
+
+* pin test-common to merged main ([0116ed1](https://github.com/timescale/timescaledb-backfill/commit/0116ed1459ac70e884eae7b2adc4bf25ae61fc49))
+* pin test-common to v0.25.0 ([26940e8](https://github.com/timescale/timescaledb-backfill/commit/26940e8aed5242b67cb1c299a55b3ec2c1e087cd))
+* update test-common ([720ee5d](https://github.com/timescale/timescaledb-backfill/commit/720ee5d822e2aaf732eb5b4f2ba7c1195b6af33b))
+* update test-common to 2.23.1 ([9b0d658](https://github.com/timescale/timescaledb-backfill/commit/9b0d658ecd858c0e795134047bcaf7ae202dbdf3))
+
 ## [0.13.0](https://github.com/timescale/timescaledb-backfill/compare/v0.12.6...v0.13.0) (2025-12-02)
 
 
