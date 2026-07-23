@@ -99,6 +99,17 @@ jobs:
         run: |
           git config --global --add url."https://${{ secrets.ORG_AUTOMATION_TOKEN }}:@github".insteadOf ssh://git@github
 
+      # The Tiger Cloud provisioning SQL is not part of this public repository.
+      # Fetch it from the private test-common repo (the ssh:// URL is rewritten
+      # to an authenticated https:// URL by the PAT override above) and point the
+      # integration tests at it via BF_CLOUD_INIT_SQL. Without this, the tests
+      # fall back to a minimal bootstrap and run without the cloud restrictions.
+      - name: Fetch cloud provisioning SQL
+        run: |
+          git clone --depth 1 --branch v0.26.0 \
+            ssh://git@github.com/timescale/test-common.git "$RUNNER_TEMP/test-common"
+          echo "BF_CLOUD_INIT_SQL=$RUNNER_TEMP/test-common/cloud_init.sql" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 

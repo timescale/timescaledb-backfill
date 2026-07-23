@@ -3,3 +3,6 @@
 /test-manual/dump.sql
 /test-manual/source.out
 /test-manual/target.out
+# Private Tiger Cloud provisioning SQL, fetched from the test-common repo in CI
+# (see BF_CLOUD_INIT_SQL). Must not be committed to this public repository.
+/tests/cloud_init.sql
