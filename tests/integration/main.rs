@@ -361,13 +361,32 @@ fn run_test<S: AsRef<OsStr>, F: Fn(&mut DbAssert, &mut DbAssert)>(
 /// - Creates the `tsdbadmin` role
 /// - Creates the `tsdb` database, with owner `tsdbadmin`
 /// - Applies most (?) of the restrictions which Timescale cloud does
-///   Note: it's somewhat non-trivial to know exactly which restrictions are
-///   applied. We cherry-picked these from: https://github.com/timescale/timescaledb-operator/blob/6b99a24ff1d72751249e4238db54b84e54e351a3/operator/pkg/options/scripts/after-create.sql
+///
+/// The full provisioning SQL mirrors Tiger Cloud internals and is not part of
+/// this public repository. When the `BF_CLOUD_INIT_SQL` environment variable
+/// points at that script, it is applied verbatim. Otherwise (e.g. an external
+/// build without access to the private script) we fall back to the minimal
+/// bootstrap the harness needs: the `tsdbadmin` role and `tsdb` database. Tests
+/// then run without the cloud restrictions applied.
 fn configure_cloud_setup<C: HasConnectionString>(container: &C) -> Result<()> {
-    psql(
-        &container,
-        PsqlInput::File(PathBuf::from("tests/cloud_init.sql")),
-    )?;
+    match std::env::var("BF_CLOUD_INIT_SQL") {
+        Ok(path) => {
+            psql(&container, PsqlInput::File(PathBuf::from(path)))?;
+        }
+        Err(_) => {
+            // `CREATE DATABASE` cannot run inside a transaction block, and
+            // `psql -c` wraps a multi-statement string in one transaction, so
+            // issue each statement as a separate command.
+            psql(
+                &container,
+                PsqlInput::Sql("CREATE ROLE tsdbadmin WITH LOGIN SUPERUSER;"),
+            )?;
+            psql(
+                &container,
+                PsqlInput::Sql("CREATE DATABASE tsdb WITH OWNER tsdbadmin;"),
+            )?;
+        }
+    }
     Ok(())
 }
 
