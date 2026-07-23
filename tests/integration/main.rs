@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use strip_ansi_escapes::strip;
 use tap_reader::Tap;
-use test_common::TsVersion::{TS223, TS225, TS226};
+use test_common::TsVersion::{TS223, TS225, TS226, TS228};
 use test_common::*;
 use testcontainers::clients::Cli;
 use tracing::debug;
@@ -1537,6 +1537,86 @@ fn clean_removes_schema() -> Result<()> {
         .unwrap()
         .with_name("target")
         .not_has_schema("__backfill");
+
+    Ok(())
+}
+
+/// A chunk compressed under a pre-2.28 format carries `minmax` sparse-index
+/// metadata only. When such a chunk is backfilled into a target whose
+/// hypertable was configured under TS 2.28, `create_compressed_chunk` copies
+/// the target's hypertable-level index (which includes `firstlast`) onto the
+/// new chunk, referencing physical `_ts_meta_*` columns the copied data lacks
+/// and corrupting its catalog (issue #195). The copy must instead fail loudly
+/// with remediation guidance.
+///
+/// The old-format source chunk is reproduced by compressing under TS 2.27.2 and
+/// then upgrading the source to the target version: an existing hypertable's
+/// compression settings are not rewritten on upgrade, so its chunks keep the
+/// minmax-only layout. The target hypertable is configured natively under 2.28,
+/// so its index advertises `firstlast`. This relies on the 2.28 image still
+/// shipping the 2.27.2 library, so other versions are skipped.
+#[test]
+fn stage_fails_on_unbacked_sparse_index_metadata() -> Result<()> {
+    if ts_version() != TS228 {
+        return Ok(());
+    }
+
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    // Source: compress under a pre-2.28 format so the chunk's physical layout
+    // and per-chunk compression metadata carry `minmax` only.
+    psql(
+        &source_container,
+        PsqlInput::Sql(
+            "DROP EXTENSION IF EXISTS timescaledb CASCADE; CREATE EXTENSION timescaledb VERSION '2.27.2';",
+        ),
+    )?;
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+    psql(&source_container, PsqlInput::Sql(COMPRESS_ALL_CHUNKS))?;
+
+    // Upgrade the source to the target version. `ALTER EXTENSION UPDATE` must
+    // run as the first statement of a fresh session, which a separate `psql`
+    // invocation provides. The already-compressed chunk keeps its minmax-only
+    // layout.
+    psql(
+        &source_container,
+        PsqlInput::Sql("ALTER EXTENSION timescaledb UPDATE;"),
+    )?;
+
+    // Target: configure compression natively under TS 2.28, so the
+    // hypertable-level index advertises `firstlast` (unlike the old source
+    // chunk).
+    psql(&target_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &target_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+
+    // `stage` pre-creates the target compressed chunk structure (via
+    // `create_compressed_chunk_without_data`), which is where the mismatch is
+    // detected, so the guard fails here before any data is copied.
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-06-01T00:00:00",
+    ))?
+    .assert()
+    .failure()
+    .stderr(contains("Sparse-index metadata mismatch"))
+    .stderr(contains(
+        "https://github.com/timescale/timescaledb-backfill/issues/195",
+    ))
+    .stderr(contains("firstlast on time"));
 
     Ok(())
 }

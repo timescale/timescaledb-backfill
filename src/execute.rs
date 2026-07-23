@@ -1065,6 +1065,14 @@ backfilled, you can change the settings back and restart the compression jobs.
         );
     }
 
+    validate_sparse_index_metadata(
+        source_tx,
+        target_tx,
+        source_chunk_name,
+        target_hypertable_name,
+    )
+    .await?;
+
     // The compressed chunk data table (and its index) must reflect the
     // materialized layout of the actual compressed data. Pre-2.29 the hypertable
     // settings already were materialized; in the relid catalog we must use the
@@ -1074,6 +1082,142 @@ backfilled, you can change the settings back and restart the compression jobs.
     } else {
         Ok(target_settings)
     }
+}
+
+/// A sparse-index metadata entry from `compression_settings.index`, identified
+/// by its type (e.g. `minmax`, `firstlast`) and the column it indexes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SparseIndexEntry {
+    kind: String,
+    column: String,
+}
+
+impl std::fmt::Display for SparseIndexEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} on {}", self.kind, self.column)
+    }
+}
+
+/// Parses the `index` jsonb column of `compression_settings` into a list of
+/// sparse-index entries. A NULL/absent value or unexpected shape yields an
+/// empty list.
+fn parse_sparse_index(value: Option<serde_json::Value>) -> Vec<SparseIndexEntry> {
+    let Some(serde_json::Value::Array(entries)) = value else {
+        return vec![];
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            Some(SparseIndexEntry {
+                kind: entry.get("type")?.as_str()?.to_string(),
+                column: entry.get("column")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Returns the sparse-index entries declared by the target hypertable that the
+/// source chunk cannot back.
+///
+/// `minmax` always has a working representation (positional `_ts_meta_min_N` or
+/// the v2 `_ts_meta_v2_min_<col>` columns), so it never dangles and is ignored.
+/// Any other entry the target declares but the source lacks would be stamped
+/// onto the target chunk without backing columns.
+fn unbacked_sparse_index_entries<'a>(
+    target_index: &'a [SparseIndexEntry],
+    source_index: &[SparseIndexEntry],
+) -> Vec<&'a SparseIndexEntry> {
+    let source_entries: std::collections::HashSet<&SparseIndexEntry> =
+        source_index.iter().collect();
+    target_index
+        .iter()
+        .filter(|entry| entry.kind != "minmax")
+        .filter(|entry| !source_entries.contains(entry))
+        .collect()
+}
+
+/// Fetches the sparse-index metadata (`compression_settings.index`) for the
+/// relation matching `relid_column = $1`.
+async fn fetch_sparse_index(
+    tx: &Transaction<'_>,
+    relid_column: &str,
+    table_name: &String,
+) -> Result<Vec<SparseIndexEntry>> {
+    let query = format!(
+        r"
+        SELECT index
+        FROM _timescaledb_catalog.compression_settings
+        WHERE {relid_column} = $1::text::regclass
+    "
+    );
+    let index: Option<serde_json::Value> = tx.query_one(&query, &[&table_name]).await?.get("index");
+    Ok(parse_sparse_index(index))
+}
+
+/// Guards against the sparse-index metadata mismatch described in issue #195.
+///
+/// From TS 2.28 the hypertable-level `compression_settings.index` carries
+/// entries such as `firstlast` that `create_compressed_chunk` copies verbatim
+/// onto every new chunk. When a source chunk was compressed under an older
+/// format its physical table lacks the `_ts_meta_*` columns backing those
+/// entries (the target chunk data table is a copy of that layout), so the
+/// copied metadata references columns that do not exist. On PG16 targets this
+/// makes every query that plans over the chunk fail with a `cache lookup
+/// failed for attribute 0` error; on PG17 the planner silently tolerates it.
+async fn validate_sparse_index_metadata(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    source_chunk_name: &str,
+    target_hypertable_name: &str,
+) -> Result<()> {
+    if !features::hypertable_sparse_index_metadata() {
+        return Ok(());
+    }
+
+    let target_index =
+        fetch_sparse_index(target_tx, "relid", &target_hypertable_name.to_string()).await?;
+    let source_relid_column = if features::compression_settings_with_compress_relid() {
+        "compress_relid"
+    } else {
+        "relid"
+    };
+    let source_index = fetch_sparse_index(
+        source_tx,
+        source_relid_column,
+        &source_chunk_name.to_string(),
+    )
+    .await?;
+
+    let unbacked: Vec<String> = unbacked_sparse_index_entries(&target_index, &source_index)
+        .into_iter()
+        .map(|entry| entry.to_string())
+        .collect();
+
+    if !unbacked.is_empty() {
+        bail!(
+            r"Sparse-index metadata mismatch (see https://github.com/timescale/timescaledb-backfill/issues/195).
+
+The compressed chunk '{source_chunk_name}' in the source was compressed under an
+older format and lacks the physical columns backing these sparse-index entries
+declared by the target hypertable '{target_hypertable_name}':
+
+- {}
+
+Backfilling it would copy those entries onto the target chunk without their
+backing columns, corrupting its catalog metadata. On PG16 targets this makes
+every query over the chunk fail with 'cache lookup failed for attribute 0'.
+
+Rebuild the affected source chunk(s) so their physical layout matches the
+current compression format, then restart the copy:
+
+    SELECT decompress_chunk(c), compress_chunk(c)
+    FROM show_chunks('<hypertable>') c;
+",
+            unbacked.join("\n- ")
+        );
+    }
+
+    Ok(())
 }
 
 /// Adds the backfill prefix `COMPRESS_TABLE_NAME_PREFIX` to the table name.
@@ -1576,4 +1720,99 @@ async fn clone_constraints_to_chunk(
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn entry(kind: &str, column: &str) -> SparseIndexEntry {
+        SparseIndexEntry {
+            kind: kind.to_string(),
+            column: column.to_string(),
+        }
+    }
+
+    #[test]
+    fn parse_sparse_index_reads_type_and_column() {
+        let value = json!([
+            {"type": "minmax", "column": "time"},
+            {"type": "firstlast", "column": "value"},
+        ]);
+        assert_eq!(
+            parse_sparse_index(Some(value)),
+            vec![entry("minmax", "time"), entry("firstlast", "value")],
+        );
+    }
+
+    #[test]
+    fn parse_sparse_index_null_yields_empty() {
+        assert_eq!(parse_sparse_index(None), vec![]);
+        assert_eq!(parse_sparse_index(Some(serde_json::Value::Null)), vec![]);
+    }
+
+    #[test]
+    fn parse_sparse_index_skips_malformed_entries() {
+        let value = json!([
+            {"type": "firstlast", "column": "value"},
+            {"type": "firstlast"},
+            {"column": "orphan"},
+            {"type": 42, "column": "value"},
+            "not-an-object",
+        ]);
+        assert_eq!(
+            parse_sparse_index(Some(value)),
+            vec![entry("firstlast", "value")],
+        );
+    }
+
+    #[test]
+    fn parse_sparse_index_non_array_yields_empty() {
+        assert_eq!(
+            parse_sparse_index(Some(json!({"type": "firstlast"}))),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn unbacked_flags_firstlast_missing_in_source() {
+        let target = vec![entry("minmax", "time"), entry("firstlast", "value")];
+        let source = vec![entry("minmax", "time")];
+        assert_eq!(
+            unbacked_sparse_index_entries(&target, &source),
+            vec![&entry("firstlast", "value")],
+        );
+    }
+
+    #[test]
+    fn unbacked_ignores_minmax() {
+        let target = vec![entry("minmax", "time"), entry("minmax", "value")];
+        let source = vec![];
+        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
+    }
+
+    #[test]
+    fn unbacked_empty_when_source_backs_all_entries() {
+        let target = vec![entry("minmax", "time"), entry("firstlast", "value")];
+        let source = vec![entry("firstlast", "value")];
+        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
+    }
+
+    #[test]
+    fn unbacked_empty_when_source_is_superset() {
+        let target = vec![entry("firstlast", "value")];
+        let source = vec![entry("firstlast", "value"), entry("firstlast", "other")];
+        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
+    }
+
+    #[test]
+    fn unbacked_matches_on_column_not_just_kind() {
+        let target = vec![entry("firstlast", "value")];
+        let source = vec![entry("firstlast", "other")];
+        assert_eq!(
+            unbacked_sparse_index_entries(&target, &source),
+            vec![&entry("firstlast", "value")],
+        );
+    }
 }

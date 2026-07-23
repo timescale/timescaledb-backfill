@@ -13,6 +13,7 @@ static COMPRESSION_SETTINGS_WITH_COMPRESS_RELID: OnceLock<bool> = OnceLock::new(
 static HYPERCORE_TAM: OnceLock<bool> = OnceLock::new();
 static CAGG_INVALIDATION_TRIGGER: OnceLock<bool> = OnceLock::new();
 static CHUNK_CATALOG_USES_RELID: OnceLock<bool> = OnceLock::new();
+static HYPERTABLE_SPARSE_INDEX_METADATA: OnceLock<bool> = OnceLock::new();
 
 pub async fn initialize_features(target: &Target) -> Result<()> {
     let mut ts_version = Version::parse(&fetch_tsdb_version(&target.client).await?)?;
@@ -26,6 +27,7 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     let pg_version = fetch_pg_version_number(&target.client).await?;
 
     let ts_ge_229 = VersionReq::parse(">=2.29.0").unwrap().matches(ts_version);
+    let ts_ge_228 = VersionReq::parse(">=2.28.0").unwrap().matches(ts_version);
     let ts_lt_223 = VersionReq::parse("<2.23.0").unwrap().matches(ts_version);
     let ts_lt_222 = VersionReq::parse("<2.22.0").unwrap().matches(ts_version);
     let ts_ge_219 = VersionReq::parse(">=2.19.0").unwrap().matches(ts_version);
@@ -77,6 +79,10 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     CHUNK_CATALOG_USES_RELID
         .set(ts_ge_229)
         .map_err(|e| anyhow!("CHUNK_CATALOG_USES_RELID already set to {}", e))?;
+
+    HYPERTABLE_SPARSE_INDEX_METADATA
+        .set(ts_ge_228)
+        .map_err(|e| anyhow!("HYPERTABLE_SPARSE_INDEX_METADATA already set to {}", e))?;
     Ok(())
 }
 
@@ -136,4 +142,15 @@ pub fn chunk_catalog_uses_relid() -> bool {
     *CHUNK_CATALOG_USES_RELID
         .get()
         .expect("CHUNK_CATALOG_USES_RELID is not set")
+}
+
+// Starting with TS 2.28 the hypertable-level `compression_settings.index`
+// carries sparse-index metadata entries (e.g. `firstlast`) that
+// `create_compressed_chunk` copies verbatim onto each new chunk. A chunk
+// compressed under an older format lacks the physical `_ts_meta_*` columns
+// backing those entries, so the copied metadata dangles. See issue #195.
+pub fn hypertable_sparse_index_metadata() -> bool {
+    *HYPERTABLE_SPARSE_INDEX_METADATA
+        .get()
+        .expect("HYPERTABLE_SPARSE_INDEX_METADATA is not set")
 }
