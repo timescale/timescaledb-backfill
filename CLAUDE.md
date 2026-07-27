@@ -101,3 +101,6 @@ The tool creates a `__backfill` administrative schema in the target database to 
 - Runs on multiple PostgreSQL and TimescaleDB version combinations
 - Includes linting, formatting, and comprehensive testing
 - Uses private GitHub token for private dependency access
+## Docs stay in sync with code
+
+Design and how-it-works docs live in `docs/`, next to the code. When you change behavior these docs describe, update the doc in the same PR. The code is the source of truth: if a doc and the code disagree, correct the doc to match, or if the code is wrong, fix the code. Do not let `docs/` drift.
