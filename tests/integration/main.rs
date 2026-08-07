@@ -1541,23 +1541,108 @@ fn clean_removes_schema() -> Result<()> {
     Ok(())
 }
 
+/// Fails when a compressed chunk's catalog metadata declares a `firstlast`
+/// sparse-index entry that its physical table can't back, which is the
+/// corruption of issue #195.
+///
+/// Row and chunk counts can't stand in for this: PG17 tolerates the dangling
+/// metadata, so every count assertion passes on PG17 even when the compressed
+/// copy path ran and corrupted the chunk. Asserting the invariant directly is
+/// what makes the test fail when the fallback stops firing.
+static ASSERT_SPARSE_INDEX_METADATA_IS_BACKED: &str = r"
+DO $$
+DECLARE
+    unbacked text;
+BEGIN
+    SELECT string_agg(format('%s on %s of %s', e->>'type', e->>'column', cs.compress_relid), ', ')
+    INTO unbacked
+    FROM _timescaledb_catalog.compression_settings cs
+    CROSS JOIN LATERAL jsonb_array_elements(cs.index) e
+    WHERE cs.compress_relid IS NOT NULL
+      AND e->>'type' = 'firstlast'
+      AND 2 <> (
+          SELECT count(*)
+          FROM pg_attribute a
+          WHERE a.attrelid = cs.compress_relid
+            AND NOT a.attisdropped
+            AND a.attname IN (
+                '_ts_meta_v2_first_' || (e->>'column'),
+                '_ts_meta_v2_last_' || (e->>'column')
+            )
+      );
+    IF unbacked IS NOT NULL THEN
+        RAISE EXCEPTION 'sparse-index metadata without backing columns: %', unbacked;
+    END IF;
+END $$;
+";
+
+/// The issue #195 setup: a source whose chunks were compressed under TS 2.27.2,
+/// so their physical layout and per-chunk metadata carry `minmax` only, and a
+/// target whose hypertable was configured natively under TS 2.28, so its
+/// hypertable-level index advertises `firstlast`.
+///
+/// The old-format source chunk is reproduced by compressing under 2.27.2 and
+/// then upgrading the source to the target version: an existing hypertable's
+/// compression settings are not rewritten on upgrade, so its chunks keep the
+/// minmax-only layout.
+fn setup_unbacked_sparse_index_metadata(
+    source_container: &impl HasConnectionString,
+    target_container: &impl HasConnectionString,
+) -> Result<()> {
+    psql(
+        source_container,
+        PsqlInput::Sql(
+            "DROP EXTENSION IF EXISTS timescaledb CASCADE; CREATE EXTENSION timescaledb VERSION '2.27.2';",
+        ),
+    )?;
+    psql(source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+    psql(
+        source_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+    psql(source_container, PsqlInput::Sql(COMPRESS_ALL_CHUNKS))?;
+
+    // `ALTER EXTENSION UPDATE` must run as the first statement of a fresh
+    // session, which a separate `psql` invocation provides. The
+    // already-compressed chunks keep their minmax-only layout.
+    psql(
+        source_container,
+        PsqlInput::Sql("ALTER EXTENSION timescaledb UPDATE;"),
+    )?;
+
+    psql(target_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        target_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+
+    Ok(())
+}
+
+/// Reports a version-gated skip. A bare `return Ok(())` reports success with no
+/// trace of having skipped, and these tests run on one version only: they need
+/// the 2.28 image to still ship the 2.27.2 library, and CI also exercises 2.27,
+/// 2.29 and nightly.
+fn skips_unless_ts228(test: &str) -> bool {
+    if ts_version() == TS228 {
+        return false;
+    }
+    eprintln!("SKIPPED {test}: requires TimescaleDB 2.28");
+    true
+}
+
 /// A chunk compressed under a pre-2.28 format carries `minmax` sparse-index
 /// metadata only. When such a chunk is backfilled into a target whose
 /// hypertable was configured under TS 2.28, `create_compressed_chunk` copies
 /// the target's hypertable-level index (which includes `firstlast`) onto the
 /// new chunk, referencing physical `_ts_meta_*` columns the copied data lacks
-/// and corrupting its catalog (issue #195). The copy must instead fail loudly
-/// with remediation guidance.
-///
-/// The old-format source chunk is reproduced by compressing under TS 2.27.2 and
-/// then upgrading the source to the target version: an existing hypertable's
-/// compression settings are not rewritten on upgrade, so its chunks keep the
-/// minmax-only layout. The target hypertable is configured natively under 2.28,
-/// so its index advertises `firstlast`. This relies on the 2.28 image still
-/// shipping the 2.27.2 library, so other versions are skipped.
+/// and corrupting its catalog (issue #195). Such chunks must instead be copied
+/// uncompressed and compressed again in the target's own format, with `stage`
+/// warning about it up front.
 #[test]
-fn stage_fails_on_unbacked_sparse_index_metadata() -> Result<()> {
-    if ts_version() != TS228 {
+fn copy_falls_back_to_uncompressed_on_unbacked_sparse_index_metadata() -> Result<()> {
+    if skips_unless_ts228("copy_falls_back_to_uncompressed_on_unbacked_sparse_index_metadata") {
         return Ok(());
     }
 
@@ -1568,55 +1653,108 @@ fn stage_fails_on_unbacked_sparse_index_metadata() -> Result<()> {
     let source_container = docker.run(timescaledb(pg_version(), ts_version()));
     let target_container = docker.run(timescaledb(pg_version(), ts_version()));
 
-    // Source: compress under a pre-2.28 format so the chunk's physical layout
-    // and per-chunk compression metadata carry `minmax` only.
-    psql(
-        &source_container,
-        PsqlInput::Sql(
-            "DROP EXTENSION IF EXISTS timescaledb CASCADE; CREATE EXTENSION timescaledb VERSION '2.27.2';",
-        ),
-    )?;
-    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
-    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
-    psql(
-        &source_container,
-        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
-    )?;
-    psql(&source_container, PsqlInput::Sql(COMPRESS_ALL_CHUNKS))?;
+    setup_unbacked_sparse_index_metadata(&source_container, &target_container)?;
 
-    // Upgrade the source to the target version. `ALTER EXTENSION UPDATE` must
-    // run as the first statement of a fresh session, which a separate `psql`
-    // invocation provides. The already-compressed chunk keeps its minmax-only
-    // layout.
-    psql(
-        &source_container,
-        PsqlInput::Sql("ALTER EXTENSION timescaledb UPDATE;"),
-    )?;
-
-    // Target: configure compression natively under TS 2.28, so the
-    // hypertable-level index advertises `firstlast` (unlike the old source
-    // chunk).
-    psql(&target_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
-    psql(
-        &target_container,
-        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
-    )?;
-
-    // `stage` pre-creates the target compressed chunk structure (via
-    // `create_compressed_chunk_without_data`), which is where the mismatch is
-    // detected, so the guard fails here before any data is copied.
+    // `stage` skips pre-creating the target compressed chunk structure for the
+    // affected chunks and reports them, so the user knows before `copy` runs
+    // that they won't be copied in compressed form.
     run_backfill(TestConfigStage::new(
         &source_container,
         &target_container,
         "2023-06-01T00:00:00",
     ))?
     .assert()
-    .failure()
-    .stderr(contains("Sparse-index metadata mismatch"))
-    .stderr(contains(
+    .success()
+    .stdout(contains("WARNING: 5 chunks will be copied uncompressed."))
+    .stdout(contains("firstlast on time"))
+    .stdout(contains(
         "https://github.com/timescale/timescaledb-backfill/issues/195",
-    ))
-    .stderr(contains("firstlast on time"));
+    ));
+
+    // `copy` re-runs the detection per chunk and says so, so a fallback that
+    // stops firing is visible in the output and not only in the catalog.
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains(
+            "copying its rows uncompressed and recompressing in target",
+        ));
+
+    psql(
+        &target_container,
+        PsqlInput::Sql(ASSERT_SPARSE_INDEX_METADATA_IS_BACKED),
+    )?;
+
+    let mut source_dbassert =
+        DbAssert::new(&source_container.connection_string())?.with_name("source");
+    let mut target_dbassert =
+        DbAssert::new(&target_container.connection_string())?.with_name("target");
+
+    // Counting the rows also proves the target chunks are queryable: with the
+    // copied-but-unbacked metadata, planning over them fails with `cache lookup
+    // failed for attribute 0` on PG16.
+    for dbassert in [&mut source_dbassert, &mut target_dbassert] {
+        dbassert
+            .has_table_count("public", "metrics", 744)
+            .has_chunk_count("public", "metrics", 5)
+            .has_compressed_chunk_count("public", "metrics", 5);
+    }
+
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("Chunk verification failed").not());
+
+    Ok(())
+}
+
+/// The fallback must also win over the completion-filter path. A `--until` that
+/// falls inside a chunk makes `copy` read that chunk's rows uncompressed to
+/// apply the filter, and that path recompresses the target chunk only when it
+/// was already compressed, which `stage` deliberately skips for the affected
+/// chunks. Detecting the mismatch first is what keeps the boundary chunk from
+/// staying uncompressed forever.
+#[test]
+fn filtered_copy_still_recompresses_on_unbacked_sparse_index_metadata() -> Result<()> {
+    if skips_unless_ts228("filtered_copy_still_recompresses_on_unbacked_sparse_index_metadata") {
+        return Ok(());
+    }
+
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    setup_unbacked_sparse_index_metadata(&source_container, &target_container)?;
+
+    // The default 7-day chunks are epoch-aligned, so the last chunk covers
+    // 2023-05-25 to 2023-06-01 and this boundary falls inside it.
+    run_backfill(TestConfigStage::new(
+        &source_container,
+        &target_container,
+        "2023-05-28T00:00:00",
+    ))?
+    .assert()
+    .success()
+    .stdout(contains("WARNING: 5 chunks will be copied uncompressed."));
+
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success();
+
+    psql(
+        &target_container,
+        PsqlInput::Sql(ASSERT_SPARSE_INDEX_METADATA_IS_BACKED),
+    )?;
+
+    // Hourly rows from 2023-05-01T00:00 up to (but not including) the boundary.
+    DbAssert::new(&target_container.connection_string())?
+        .with_name("target")
+        .has_table_count("public", "metrics", 27 * 24)
+        .has_chunk_count("public", "metrics", 5)
+        .has_compressed_chunk_count("public", "metrics", 5);
 
     Ok(())
 }
