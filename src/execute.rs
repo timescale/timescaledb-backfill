@@ -35,6 +35,40 @@ pub async fn copy_chunk(
         find_target_chunk_with_same_dimensions(target_tx, &task.source_chunk).await?;
 
     let source_chunk_compressed = is_chunk_compressed(source_tx, &task.source_chunk).await?;
+    let source_compressed_chunk = get_compressed_chunk(source_tx, &task.source_chunk).await?;
+
+    // A source chunk compressed under an older format can't be copied in
+    // compressed form: its physical layout doesn't back the sparse-index
+    // metadata the target hypertable declares (issue #195). Copy its rows in
+    // uncompressed form instead and let the target compress them in its own
+    // format.
+    //
+    // This must be decided before the completion-filter branch below, which
+    // recompresses the target chunk only when it was already compressed:
+    // `stage` deliberately leaves the affected chunks uncompressed, so taking
+    // that branch would leave the chunk holding the `--until` boundary
+    // uncompressed forever. Detection is re-run here instead of read from the
+    // task, so a `stage` warning has not necessarily preceded it: tasks staged
+    // by a binary without this check reach the fallback too.
+    if let Some(source_compressed_chunk) = &source_compressed_chunk {
+        let target_hypertable_index =
+            fetch_hypertable_sparse_index(target_tx, &target_chunk.hypertable).await?;
+        let unbacked = unbacked_sparse_index_metadata(
+            source_tx,
+            source_compressed_chunk,
+            &target_hypertable_index,
+        )
+        .await?;
+        if !unbacked.is_empty() {
+            warn!(
+                "chunk {} was compressed under an older format which cannot back the sparse-index metadata of hypertable {} ({}), copying its rows uncompressed and recompressing in target",
+                task.source_chunk.quoted_name(),
+                target_chunk.hypertable.quoted_name(),
+                unbacked.join(", "),
+            );
+            return copy_chunk_data_and_recompress(source_tx, target_tx, task, &target_chunk).await;
+        }
+    }
 
     // If we're trying to filter on a compressed chunk, fall back to reading rows directly
     // from the uncompressed chunk, and write the uncompressed rows into the target.
@@ -75,8 +109,6 @@ pub async fn copy_chunk(
         }
         return Ok(result);
     }
-
-    let source_compressed_chunk = get_compressed_chunk(source_tx, &task.source_chunk).await?;
 
     let target_chunk_is_compressed = is_chunk_compressed(target_tx, &target_chunk).await?;
 
@@ -168,6 +200,47 @@ pub async fn copy_chunk(
         rows: uncompressed_result.rows + compressed_result.as_ref().map(|r| r.rows).unwrap_or(0),
         bytes: uncompressed_result.bytes + compressed_result.as_ref().map(|r| r.bytes).unwrap_or(0),
     })
+}
+
+/// Copies a compressed source chunk's rows in uncompressed form and compresses
+/// the target chunk afterwards, so the target holds data compressed in its own
+/// format instead of a byte-level copy of the source's compressed layout.
+async fn copy_chunk_data_and_recompress(
+    source_tx: &Transaction<'_>,
+    target_tx: &Transaction<'_>,
+    task: &CopyTask,
+    target_chunk: &TargetChunk,
+) -> Result<CopyResult> {
+    // The target chunk must be uncompressed to receive the rows: deleting or
+    // inserting uncompressed rows doesn't reach its compressed chunk.
+    if is_chunk_compressed(target_tx, target_chunk).await? {
+        // On a resumed backfill the target chunk can be compressed only because
+        // an earlier `stage` (from a binary without the check above)
+        // pre-created its compressed chunk carrying the copied, unbacked
+        // metadata. `decompress_chunk` plans over that chunk, which is exactly
+        // what fails with `cache lookup failed for attribute 0` on PG16, so
+        // report what actually happened instead of surfacing the planner error.
+        // PG17 tolerates the planning, so there the decompression succeeds and
+        // the recompression below rebuilds the chunk in a backed layout.
+        let unbacked = unbacked_target_chunk_metadata(target_tx, target_chunk).await?;
+        decompress_chunk(target_tx, target_chunk)
+            .await
+            .with_context(|| decompress_failure_context(target_chunk, &unbacked))?;
+    }
+
+    let result = copy_chunk_data(
+        source_tx,
+        target_tx,
+        &task.source_chunk,
+        target_chunk,
+        &task.filter,
+        CopyMode::UncompressedAndCompressed,
+    )
+    .await?;
+
+    compress_chunk(target_tx, target_chunk).await?;
+
+    Ok(result)
 }
 
 async fn create_compressed_chunk_from_source_chunk(
@@ -1065,14 +1138,6 @@ backfilled, you can change the settings back and restart the compression jobs.
         );
     }
 
-    validate_sparse_index_metadata(
-        source_tx,
-        target_tx,
-        source_chunk_name,
-        target_hypertable_name,
-    )
-    .await?;
-
     // The compressed chunk data table (and its index) must reflect the
     // materialized layout of the actual compressed data. Pre-2.29 the hypertable
     // settings already were materialized; in the relid catalog we must use the
@@ -1087,7 +1152,7 @@ backfilled, you can change the settings back and restart the compression jobs.
 /// A sparse-index metadata entry from `compression_settings.index`, identified
 /// by its type (e.g. `minmax`, `firstlast`) and the column it indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct SparseIndexEntry {
+pub struct SparseIndexEntry {
     kind: String,
     column: String,
 }
@@ -1099,45 +1164,108 @@ impl std::fmt::Display for SparseIndexEntry {
 }
 
 /// Parses the `index` jsonb column of `compression_settings` into a list of
-/// sparse-index entries. A NULL/absent value or unexpected shape yields an
-/// empty list.
-fn parse_sparse_index(value: Option<serde_json::Value>) -> Vec<SparseIndexEntry> {
-    let Some(serde_json::Value::Array(entries)) = value else {
-        return vec![];
+/// sparse-index entries. An absent or NULL value yields an empty list; any
+/// other shape the parser cannot positively interpret is an error.
+///
+/// This fails closed on purpose. The empty list means "declares no sparse
+/// index", which routes a chunk down the compressed-copy path, so silently
+/// answering it for a catalog shape we don't recognize would let through
+/// exactly the corruption the caller exists to prevent, and that corruption is
+/// invisible on PG17 and unrepairable as `tsdbadmin`.
+fn parse_sparse_index(value: Option<serde_json::Value>) -> Result<Vec<SparseIndexEntry>> {
+    let entries = match value {
+        None | Some(serde_json::Value::Null) => return Ok(vec![]),
+        Some(serde_json::Value::Array(entries)) => entries,
+        Some(other) => bail!("unrecognized compression_settings.index shape: {other}"),
     };
     entries
         .iter()
-        .filter_map(|entry| {
-            Some(SparseIndexEntry {
-                kind: entry.get("type")?.as_str()?.to_string(),
-                column: entry.get("column")?.as_str()?.to_string(),
+        .map(|entry| {
+            let field = |name: &str| -> Result<String> {
+                entry
+                    .get(name)
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+                    .with_context(|| {
+                        format!("compression_settings.index entry has no string `{name}`: {entry}")
+                    })
+            };
+            Ok(SparseIndexEntry {
+                kind: field("type")?,
+                column: field("column")?,
             })
         })
         .collect()
 }
 
-/// Returns the sparse-index entries declared by the target hypertable that the
-/// source chunk cannot back.
+/// The physical columns of a compressed chunk that back a sparse-index entry,
+/// or `None` for an entry type whose physical layout we don't know.
 ///
-/// `minmax` always has a working representation (positional `_ts_meta_min_N` or
-/// the v2 `_ts_meta_v2_min_<col>` columns), so it never dangles and is ignored.
-/// Any other entry the target declares but the source lacks would be stamped
-/// onto the target chunk without backing columns.
-fn unbacked_sparse_index_entries<'a>(
-    target_index: &'a [SparseIndexEntry],
-    source_index: &[SparseIndexEntry],
+/// `firstlast` is materialized as `_ts_meta_v2_first_<column>` /
+/// `_ts_meta_v2_last_<column>`, the same columns `create_compressed_chunk_index`
+/// builds its index on.
+fn sparse_index_backing_columns(entry: &SparseIndexEntry) -> Option<Vec<String>> {
+    match entry.kind.as_str() {
+        "firstlast" => Some(vec![
+            format!("_ts_meta_v2_first_{}", entry.column),
+            format!("_ts_meta_v2_last_{}", entry.column),
+        ]),
+        _ => None,
+    }
+}
+
+/// Filters `entries` down to those the compressed chunk's `columns` cannot back.
+///
+/// `minmax` is skipped: it always has a working representation on a compressed
+/// chunk, either the positional `_ts_meta_min_N` columns or the v2
+/// `_ts_meta_v2_min_<col>` ones, so it never dangles.
+fn unbacked_entries<'a>(
+    entries: &'a [SparseIndexEntry],
+    columns: &std::collections::HashSet<String>,
 ) -> Vec<&'a SparseIndexEntry> {
-    let source_entries: std::collections::HashSet<&SparseIndexEntry> =
-        source_index.iter().collect();
-    target_index
+    entries
         .iter()
         .filter(|entry| entry.kind != "minmax")
-        .filter(|entry| !source_entries.contains(entry))
+        .filter(|entry| match sparse_index_backing_columns(entry) {
+            Some(required) => !required.iter().all(|column| columns.contains(column)),
+            // An entry type whose physical layout we don't know can't be
+            // verified. Call it unbacked: the fallback is only slower, while a
+            // wrong "compatible" answer corrupts the target chunk's catalog.
+            None => true,
+        })
         .collect()
 }
 
+/// The `_ts_meta_*` column names present on a compressed chunk's physical table.
+async fn fetch_metadata_columns(
+    tx: &Transaction<'_>,
+    table_name: &String,
+) -> Result<std::collections::HashSet<String>> {
+    let rows = tx
+        .query(
+            r"
+            SELECT attname
+            FROM pg_attribute
+            WHERE attrelid = $1::text::regclass
+              AND attname ~ '^_ts_meta_'
+              AND attnum > 0
+              AND NOT attisdropped",
+            &[table_name],
+        )
+        .await
+        .with_context(|| format!("failed to read metadata columns of {table_name}"))?;
+    Ok(rows
+        .iter()
+        .map(|row| row.get::<_, String>("attname"))
+        .collect())
+}
+
 /// Fetches the sparse-index metadata (`compression_settings.index`) for the
-/// relation matching `relid_column = $1`.
+/// relation matching `relid_column = $1`. A relation without a compression
+/// settings row is an error: an empty index and a missing row mean different
+/// things to the callers, and the sibling
+/// `fetch_compressed_chunk_compression_settings` treats a missing row the same
+/// way.
 async fn fetch_sparse_index(
     tx: &Transaction<'_>,
     relid_column: &str,
@@ -1150,11 +1278,33 @@ async fn fetch_sparse_index(
         WHERE {relid_column} = $1::text::regclass
     "
     );
-    let index: Option<serde_json::Value> = tx.query_one(&query, &[&table_name]).await?.get("index");
-    Ok(parse_sparse_index(index))
+    let row = tx
+        .query_opt(&query, &[&table_name])
+        .await?
+        .with_context(|| format!("no compression settings found for {table_name}"))?;
+    parse_sparse_index(row.get("index"))
 }
 
-/// Guards against the sparse-index metadata mismatch described in issue #195.
+/// Fetches the sparse-index entries the target hypertable declares, which
+/// `create_compressed_chunk` stamps onto every compressed chunk it creates.
+///
+/// Invariant per hypertable, so `stage` fetches it once per hypertable rather
+/// than once per chunk.
+pub async fn fetch_hypertable_sparse_index(
+    target_tx: &Transaction<'_>,
+    target_hypertable: &Hypertable,
+) -> Result<Vec<SparseIndexEntry>> {
+    if !features::hypertable_sparse_index_metadata() {
+        return Ok(vec![]);
+    }
+    let target_hypertable_name =
+        format!("{}.{}", target_hypertable.schema, target_hypertable.table);
+    fetch_sparse_index(target_tx, "relid", &target_hypertable_name).await
+}
+
+/// Detects the sparse-index metadata mismatch described in issue #195, and
+/// returns the entries of `target_hypertable_index` that the source compressed
+/// chunk's physical layout cannot back (empty when it backs them all).
 ///
 /// From TS 2.28 the hypertable-level `compression_settings.index` carries
 /// entries such as `firstlast` that `create_compressed_chunk` copies verbatim
@@ -1164,60 +1314,87 @@ async fn fetch_sparse_index(
 /// copied metadata references columns that do not exist. On PG16 targets this
 /// makes every query that plans over the chunk fail with a `cache lookup
 /// failed for attribute 0` error; on PG17 the planner silently tolerates it.
-async fn validate_sparse_index_metadata(
+///
+/// The mismatch is catalog-versus-physical, so this reads the source chunk's
+/// actual columns rather than comparing the two catalogs: a chunk's
+/// `compression_settings` row materializes defaults the hypertable row omits,
+/// which makes catalog-to-catalog equality report compatible layouts as
+/// mismatched.
+///
+/// A chunk with unbacked entries cannot be copied in compressed form. `copy`
+/// falls back to copying its rows uncompressed and letting the target compress
+/// them in its own format; `stage` only skips pre-creating the target
+/// compressed chunk and warns, leaving the copy decision to `copy`.
+pub async fn unbacked_sparse_index_metadata(
     source_tx: &Transaction<'_>,
-    target_tx: &Transaction<'_>,
-    source_chunk_name: &str,
-    target_hypertable_name: &str,
-) -> Result<()> {
-    if !features::hypertable_sparse_index_metadata() {
-        return Ok(());
+    source_compressed_chunk: &SourceCompressedChunk,
+    target_hypertable_index: &[SparseIndexEntry],
+) -> Result<Vec<String>> {
+    if target_hypertable_index
+        .iter()
+        .all(|entry| entry.kind == "minmax")
+    {
+        return Ok(vec![]);
     }
 
-    let target_index =
-        fetch_sparse_index(target_tx, "relid", &target_hypertable_name.to_string()).await?;
-    let source_relid_column = if features::compression_settings_with_compress_relid() {
-        "compress_relid"
-    } else {
-        "relid"
-    };
-    let source_index = fetch_sparse_index(
-        source_tx,
-        source_relid_column,
-        &source_chunk_name.to_string(),
-    )
-    .await?;
+    let source_chunk_name = format!(
+        "{}.{}",
+        source_compressed_chunk.schema, source_compressed_chunk.table
+    );
+    let source_columns = fetch_metadata_columns(source_tx, &source_chunk_name).await?;
 
-    let unbacked: Vec<String> = unbacked_sparse_index_entries(&target_index, &source_index)
+    Ok(unbacked_entries(target_hypertable_index, &source_columns)
         .into_iter()
         .map(|entry| entry.to_string())
-        .collect();
+        .collect())
+}
 
-    if !unbacked.is_empty() {
-        bail!(
-            r"Sparse-index metadata mismatch (see https://github.com/timescale/timescaledb-backfill/issues/195).
-
-The compressed chunk '{source_chunk_name}' in the source was compressed under an
-older format and lacks the physical columns backing these sparse-index entries
-declared by the target hypertable '{target_hypertable_name}':
-
-- {}
-
-Backfilling it would copy those entries onto the target chunk without their
-backing columns, corrupting its catalog metadata. On PG16 targets this makes
-every query over the chunk fail with 'cache lookup failed for attribute 0'.
-
-Rebuild the affected source chunk(s) so their physical layout matches the
-current compression format, then restart the copy:
-
-    SELECT decompress_chunk(c), compress_chunk(c)
-    FROM show_chunks('<hypertable>') c;
-",
-            unbacked.join("\n- ")
-        );
+/// Returns the entries in the target chunk's own compressed-chunk metadata that
+/// its physical layout cannot back, i.e. the corruption of issue #195 already
+/// present in the target.
+async fn unbacked_target_chunk_metadata(
+    target_tx: &Transaction<'_>,
+    target_chunk: &TargetChunk,
+) -> Result<Vec<String>> {
+    if !features::hypertable_sparse_index_metadata() {
+        return Ok(vec![]);
     }
+    let Some(target_compressed_chunk) = get_compressed_chunk(target_tx, target_chunk).await? else {
+        return Ok(vec![]);
+    };
+    let target_compressed_chunk_name = format!(
+        "{}.{}",
+        target_compressed_chunk.schema, target_compressed_chunk.table
+    );
+    // Chunk-level settings are keyed by `compress_relid`; reaching this code
+    // requires TS >= 2.28, which implies the column exists.
+    let index =
+        fetch_sparse_index(target_tx, "compress_relid", &target_compressed_chunk_name).await?;
+    let columns = fetch_metadata_columns(target_tx, &target_compressed_chunk_name).await?;
+    Ok(unbacked_entries(&index, &columns)
+        .into_iter()
+        .map(|entry| entry.to_string())
+        .collect())
+}
 
-    Ok(())
+/// The context for a failed decompression of a target chunk, naming the issue
+/// #195 corruption as the cause when the chunk's metadata carries it.
+fn decompress_failure_context(target_chunk: &TargetChunk, unbacked: &[String]) -> String {
+    let chunk = target_chunk.quoted_name();
+    if unbacked.is_empty() {
+        return format!("failed to decompress target chunk {chunk}");
+    }
+    format!(
+        r"failed to decompress target chunk {chunk}.
+
+Its compressed chunk was pre-created by an earlier `stage` with sparse-index
+metadata that its physical layout does not back ({entries}), which PG16 cannot
+plan over (issue #195). Drop the compressed chunk in the target, then run
+`stage` again with this version of timescaledb-backfill, which leaves the
+affected chunks uncompressed until `copy` recompresses them in the target's own
+format.",
+        entries = unbacked.join(", "),
+    )
 }
 
 /// Adds the backfill prefix `COMPRESS_TABLE_NAME_PREFIX` to the table name.
@@ -1734,6 +1911,10 @@ mod tests {
         }
     }
 
+    fn columns(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
     #[test]
     fn parse_sparse_index_reads_type_and_column() {
         let value = json!([
@@ -1741,78 +1922,125 @@ mod tests {
             {"type": "firstlast", "column": "value"},
         ]);
         assert_eq!(
-            parse_sparse_index(Some(value)),
+            parse_sparse_index(Some(value)).unwrap(),
             vec![entry("minmax", "time"), entry("firstlast", "value")],
         );
     }
 
     #[test]
     fn parse_sparse_index_null_yields_empty() {
-        assert_eq!(parse_sparse_index(None), vec![]);
-        assert_eq!(parse_sparse_index(Some(serde_json::Value::Null)), vec![]);
-    }
-
-    #[test]
-    fn parse_sparse_index_skips_malformed_entries() {
-        let value = json!([
-            {"type": "firstlast", "column": "value"},
-            {"type": "firstlast"},
-            {"column": "orphan"},
-            {"type": 42, "column": "value"},
-            "not-an-object",
-        ]);
+        assert_eq!(parse_sparse_index(None).unwrap(), vec![]);
         assert_eq!(
-            parse_sparse_index(Some(value)),
-            vec![entry("firstlast", "value")],
-        );
-    }
-
-    #[test]
-    fn parse_sparse_index_non_array_yields_empty() {
-        assert_eq!(
-            parse_sparse_index(Some(json!({"type": "firstlast"}))),
+            parse_sparse_index(Some(serde_json::Value::Null)).unwrap(),
             vec![]
         );
     }
 
     #[test]
-    fn unbacked_flags_firstlast_missing_in_source() {
-        let target = vec![entry("minmax", "time"), entry("firstlast", "value")];
-        let source = vec![entry("minmax", "time")];
+    fn parse_sparse_index_errors_on_malformed_entries() {
+        for malformed in [
+            json!([{"type": "firstlast"}]),
+            json!([{"column": "orphan"}]),
+            json!([{"type": 42, "column": "value"}]),
+            json!(["not-an-object"]),
+        ] {
+            assert!(
+                parse_sparse_index(Some(malformed.clone())).is_err(),
+                "expected {malformed} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_sparse_index_errors_on_non_array() {
+        assert!(parse_sparse_index(Some(json!({"type": "firstlast"}))).is_err());
+    }
+
+    #[test]
+    fn unbacked_flags_firstlast_without_backing_columns() {
+        let index = vec![entry("minmax", "time"), entry("firstlast", "value")];
+        let present = columns(&["_ts_meta_min_1", "_ts_meta_max_1"]);
         assert_eq!(
-            unbacked_sparse_index_entries(&target, &source),
+            unbacked_entries(&index, &present),
+            vec![&entry("firstlast", "value")],
+        );
+    }
+
+    #[test]
+    fn unbacked_flags_firstlast_with_only_one_backing_column() {
+        let index = vec![entry("firstlast", "value")];
+        let present = columns(&["_ts_meta_v2_first_value"]);
+        assert_eq!(
+            unbacked_entries(&index, &present),
             vec![&entry("firstlast", "value")],
         );
     }
 
     #[test]
     fn unbacked_ignores_minmax() {
-        let target = vec![entry("minmax", "time"), entry("minmax", "value")];
-        let source = vec![];
-        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
+        let index = vec![entry("minmax", "time"), entry("minmax", "value")];
+        assert!(unbacked_entries(&index, &columns(&[])).is_empty());
     }
 
     #[test]
-    fn unbacked_empty_when_source_backs_all_entries() {
-        let target = vec![entry("minmax", "time"), entry("firstlast", "value")];
-        let source = vec![entry("firstlast", "value")];
-        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
-    }
-
-    #[test]
-    fn unbacked_empty_when_source_is_superset() {
-        let target = vec![entry("firstlast", "value")];
-        let source = vec![entry("firstlast", "value"), entry("firstlast", "other")];
-        assert!(unbacked_sparse_index_entries(&target, &source).is_empty());
+    fn unbacked_empty_when_columns_back_all_entries() {
+        let index = vec![entry("minmax", "time"), entry("firstlast", "value")];
+        let present = columns(&["_ts_meta_v2_first_value", "_ts_meta_v2_last_value"]);
+        assert!(unbacked_entries(&index, &present).is_empty());
     }
 
     #[test]
     fn unbacked_matches_on_column_not_just_kind() {
-        let target = vec![entry("firstlast", "value")];
-        let source = vec![entry("firstlast", "other")];
+        let index = vec![entry("firstlast", "value")];
+        let present = columns(&["_ts_meta_v2_first_other", "_ts_meta_v2_last_other"]);
         assert_eq!(
-            unbacked_sparse_index_entries(&target, &source),
+            unbacked_entries(&index, &present),
             vec![&entry("firstlast", "value")],
         );
+    }
+
+    #[test]
+    fn unbacked_flags_unknown_entry_types() {
+        // An entry type whose physical layout we don't know must fail closed,
+        // even when the chunk carries plenty of metadata columns.
+        let index = vec![entry("bloom", "value")];
+        let present = columns(&[
+            "_ts_meta_v2_first_value",
+            "_ts_meta_v2_last_value",
+            "_ts_meta_v2_bloom1_value",
+        ]);
+        assert_eq!(
+            unbacked_entries(&index, &present),
+            vec![&entry("bloom", "value")],
+        );
+    }
+
+    #[test]
+    fn backing_columns_are_the_v2_first_and_last_columns() {
+        assert_eq!(
+            sparse_index_backing_columns(&entry("firstlast", "time")),
+            Some(vec![
+                "_ts_meta_v2_first_time".to_string(),
+                "_ts_meta_v2_last_time".to_string(),
+            ]),
+        );
+        assert_eq!(sparse_index_backing_columns(&entry("bloom", "time")), None);
+    }
+
+    #[test]
+    fn decompress_failure_context_names_issue_195_only_when_unbacked() {
+        let chunk = TargetChunk {
+            schema: "_timescaledb_internal".to_string(),
+            table: "_hyper_1_1_chunk".to_string(),
+            hypertable: Hypertable {
+                schema: "public".to_string(),
+                table: "metrics".to_string(),
+            },
+            dimensions: vec![],
+        };
+        assert!(!decompress_failure_context(&chunk, &[]).contains("195"));
+        let with_unbacked = decompress_failure_context(&chunk, &["firstlast on time".to_string()]);
+        assert!(with_unbacked.contains("195"));
+        assert!(with_unbacked.contains("firstlast on time"));
     }
 }

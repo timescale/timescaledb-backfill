@@ -1,6 +1,7 @@
 use crate::connect::{Source, Target};
 use crate::execute::{
-    create_compressed_chunk_without_data, create_uncompressed_chunk, get_compressed_chunk,
+    create_compressed_chunk_without_data, create_uncompressed_chunk, fetch_hypertable_sparse_index,
+    get_compressed_chunk, unbacked_sparse_index_metadata, SparseIndexEntry,
 };
 use crate::sql::assert_regex;
 use crate::storage::{backfill_schema_exists, init_schema};
@@ -10,7 +11,7 @@ use crate::timescale::{
 };
 use crate::{features, TERM};
 use anyhow::{bail, Result};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use tokio_postgres::error::SqlState;
@@ -240,6 +241,14 @@ pub async fn load_queue(
     }
 
     let mut skipped_chunks = 0;
+    // Source chunks that can't be copied in compressed form, and the
+    // sparse-index entries they can't back (see issue #195).
+    let mut uncompressed_fallbacks: Vec<String> = vec![];
+    let mut unbacked_entries: BTreeSet<String> = BTreeSet::new();
+    // The sparse-index entries each target hypertable declares, keyed by its
+    // quoted name. Invariant per hypertable, so it's queried once and reused
+    // across that hypertable's chunks.
+    let mut hypertable_sparse_index: HashMap<String, Vec<SparseIndexEntry>> = HashMap::new();
 
     let hypertables: Vec<String> = rows
         .iter()
@@ -322,8 +331,41 @@ pub async fn load_queue(
             if let Some(source_compressed_chunk) =
                 get_compressed_chunk(&source_tx, &source_chunk).await?
             {
-                // Check if target compressed chunk already exists
-                if get_compressed_chunk(&target_tx, &target_chunk)
+                // A chunk compressed under an older format can't be copied in
+                // compressed form: its layout doesn't back the sparse-index
+                // metadata the target hypertable declares (issue #195). Skip
+                // pre-creating the target compressed chunk for it and warn: the
+                // copy decision is `copy`'s, which re-runs this same detection
+                // per chunk, so the skip is only bookkeeping consistent with
+                // what `copy` will do.
+                //
+                // The target hypertable's declared index is invariant per
+                // hypertable, so cache it instead of querying it once per chunk.
+                let hypertable = target_chunk.hypertable.quoted_name();
+                if !hypertable_sparse_index.contains_key(&hypertable) {
+                    let index =
+                        fetch_hypertable_sparse_index(&target_tx, &target_chunk.hypertable).await?;
+                    hypertable_sparse_index.insert(hypertable.clone(), index);
+                }
+                let unbacked = unbacked_sparse_index_metadata(
+                    &source_tx,
+                    &source_compressed_chunk,
+                    &hypertable_sparse_index[&hypertable],
+                )
+                .await?;
+
+                if !unbacked.is_empty() {
+                    debug!(
+                        "Source chunk {} cannot back the sparse-index metadata of hypertable {} ({}); it will be copied uncompressed",
+                        source_chunk.quoted_name(),
+                        target_chunk.hypertable.quoted_name(),
+                        unbacked.join(", "),
+                    );
+                    uncompressed_fallbacks.push(source_chunk.quoted_name());
+                    for entry in unbacked {
+                        unbacked_entries.insert(entry);
+                    }
+                } else if get_compressed_chunk(&target_tx, &target_chunk)
                     .await?
                     .is_none()
                 {
@@ -353,9 +395,80 @@ pub async fn load_queue(
         ))?;
     }
 
+    if !uncompressed_fallbacks.is_empty() {
+        TERM.write_line(&uncompressed_fallback_warning(
+            &uncompressed_fallbacks,
+            &unbacked_entries,
+        ))?;
+    }
+
     let staged_tasks = chunk_count - skipped_chunks;
 
     Ok(staged_tasks)
+}
+
+/// How many of the affected chunks the fallback warning lists by name before
+/// summarizing the rest.
+const UNCOMPRESSED_FALLBACK_LISTED_CHUNKS: usize = 5;
+
+/// Builds the `stage` warning for source chunks that can't be copied in
+/// compressed form because they were compressed under a format that doesn't
+/// back the sparse-index metadata the target hypertables declare (issue #195).
+fn uncompressed_fallback_warning(chunks: &[String], unbacked_entries: &BTreeSet<String>) -> String {
+    let mut listed: Vec<String> = chunks
+        .iter()
+        .take(UNCOMPRESSED_FALLBACK_LISTED_CHUNKS)
+        .map(|chunk| format!("- {chunk}"))
+        .collect();
+    if let Some(remaining) = chunks.len().checked_sub(listed.len()).filter(|r| *r > 0) {
+        listed.push(format!(
+            "- ...and {remaining} more (set RUST_LOG=debug to list them all)"
+        ));
+    }
+
+    let (subject, pronoun) = if chunks.len() == 1 {
+        ("chunk", "It was")
+    } else {
+        ("chunks", "They were")
+    };
+
+    format!(
+        r"
+WARNING: {chunk_count} {subject} will be copied uncompressed.
+
+{pronoun} compressed in the source under an older TimescaleDB format that
+cannot back the sparse-index metadata declared by the target hypertables
+({entries}). Copying them in compressed form would corrupt the catalog
+metadata of the target chunks, so their rows are copied uncompressed and the
+target chunks are compressed again afterwards, in the target's own format.
+This is slower than a compressed copy, but the data is complete either way.
+See https://github.com/timescale/timescaledb-backfill/issues/195.
+
+{listed}
+
+To copy them in compressed form instead, rebuild them in the source so their
+physical layout matches the current compression format, and run `copy` again.
+This only helps once the source extension is itself on the version that
+declares these entries; on an older source the rebuilt chunks keep the layout
+they have now:
+
+    SELECT decompress_chunk(chunk), compress_chunk(chunk)
+    FROM (
+        SELECT format('%I.%I', chunk_schema, chunk_name)::regclass AS chunk
+        FROM timescaledb_information.chunks
+        WHERE hypertable_schema = '<schema>'
+          AND hypertable_name = '<table>'
+          AND is_compressed
+    ) c;
+",
+        chunk_count = chunks.len(),
+        entries = unbacked_entries
+            .iter()
+            .cloned()
+            .collect::<Vec<String>>()
+            .join(", "),
+        listed = listed.join("\n"),
+    )
 }
 
 async fn get_pending_task_count(client: &Client, task: &TaskType) -> Result<u64> {
