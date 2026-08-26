@@ -2598,7 +2598,7 @@ checksum = "8f13fc301d415a8cd4529ba679720c59f07369bcff573618a6e8d5afebefb6f3"
 
 [[package]]
 name = "telemetry-client"
-version = "0.1.2"
+version = "0.15.0"
 dependencies = [
  "httpmock",
  "reqwest",
@@ -2649,7 +2649,7 @@ checksum = "3369f5ac52d5eb6ab48c6b4ffdc8efbcad6b89c765749064ba298f2c68a16a76"
 
 [[package]]
 name = "test-common"
-version = "0.25.0"
+version = "0.15.0"
 dependencies = [
  "assert_cmd",
  "assert_fs",
@@ -2716,7 +2716,7 @@ dependencies = [
 
 [[package]]
 name = "timescaledb-backfill"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
