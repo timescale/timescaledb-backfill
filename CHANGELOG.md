@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.15.0](https://github.com/timescale/timescaledb-backfill/compare/v0.14.0...v0.15.0) (2026-08-26)
+
+
+### Features
+
+* guard against unbacked sparse-index metadata ([bded7d9](https://github.com/timescale/timescaledb-backfill/commit/bded7d9cf460fcfd237fedd9002f52108adec13f))
+* migrate pre-2.28 format chunks instead of refusing them ([d97aaa6](https://github.com/timescale/timescaledb-backfill/commit/d97aaa6a29823460446207730317450ee0e2b6f1))
+* vendor telemetry-client and test-common into the repo ([5c6ffe5](https://github.com/timescale/timescaledb-backfill/commit/5c6ffe5fb55b95becb7084c7c1ec1e7a6b1efd73))
+
 ## [0.14.0](https://github.com/timescale/timescaledb-backfill/compare/v0.13.0...v0.14.0) (2026-07-22)
 
 
