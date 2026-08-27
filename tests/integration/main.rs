@@ -1893,11 +1893,6 @@ fn wait_for_message_in_output<T: Read>(output: &mut T, message: &str) -> Result<
     bail!("message '{message}' not found in output")
 }
 
-// This test fails under macos, because double ctrl-c does not actually
-// hard-stop the program on that platform. Inserting a `yield_now` into the
-// tight loop in `copy_from_source_to_sink` fixes the problem, but it needs
-// further investigation.
-#[cfg(not(target_os = "macos"))]
 #[test]
 #[allow(clippy::zombie_processes)]
 fn double_ctrl_c_stops_hard() -> Result<()> {

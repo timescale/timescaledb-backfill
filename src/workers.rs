@@ -168,13 +168,28 @@ impl Worker {
         let target = self.target;
         let task_count = self.task_count;
 
+        // Note: we spawn run_inner as a separate task, to prevent it from blocking
+        // the select below.
+        let inner = tokio::spawn(Self::run_inner(
+            graceful_shutdown.clone(),
+            source,
+            target,
+            task_count,
+            task,
+        ));
+        // Dropping a `JoinHandle` detaches the task instead of stopping it, so a
+        // hard shutdown must abort it explicitly. Otherwise the in-progress copy
+        // keeps running (and can even commit and report itself as copied) after
+        // we've told the user we're terminating immediately.
+        let abort_inner = inner.abort_handle();
+
         tokio::select! {
             _ = hard_shutdown.0.cancelled() => {
                 debug!("worker received hard shutdown");
+                abort_inner.abort();
                 Ok(WorkerResult::HardShutdown)
             },
-            // Note: we spawn run_inner as a separate task, to prevent it from blocking this select.
-            res = tokio::spawn(Self::run_inner(graceful_shutdown.clone(), source, target, task_count, task)) => {
+            res = inner => {
                 match res {
                     Ok(r) => r,
                     Err(join_error) => {
