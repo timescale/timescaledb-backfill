@@ -1632,6 +1632,20 @@ fn skips_unless_ts228(test: &str) -> bool {
     true
 }
 
+/// Reports a version-gated skip for a test that can only observe its bug below
+/// TimescaleDB 2.23. From 2.23 on (timescaledb#8704) the `DELETE` that clears a
+/// chunk's uncompressed rows also decompresses and removes its compressed
+/// batches, so the assertion holds there for an unrelated reason and would
+/// report coverage the run doesn't have. 2.22 is the only version in CI below
+/// the cutoff, so dropping it from the matrix takes this test with it.
+fn skips_unless_ts_lt_223(test: &str) -> bool {
+    if ts_version() < TS223 {
+        return false;
+    }
+    eprintln!("SKIPPED {test}: requires TimescaleDB < 2.23");
+    true
+}
+
 /// A chunk compressed under a pre-2.28 format carries `minmax` sparse-index
 /// metadata only. When such a chunk is backfilled into a target whose
 /// hypertable was configured under TS 2.28, `create_compressed_chunk` copies
@@ -1755,6 +1769,85 @@ fn filtered_copy_still_recompresses_on_unbacked_sparse_index_metadata() -> Resul
         .has_table_count("public", "metrics", 27 * 24)
         .has_chunk_count("public", "metrics", 5)
         .has_compressed_chunk_count("public", "metrics", 5);
+
+    Ok(())
+}
+
+/// A chunk that was already copied must be replaced by a second copy, not added
+/// to. The compressed batches have to be cleared explicitly: without that,
+/// staging and copying the same compressed chunk twice leaves the target
+/// holding both copies of every batch (issue #204). Nothing in the target
+/// catches it, the batches go into the internal compressed table, underneath
+/// the uncompressed chunk that carries the hypertable's indexes and
+/// constraints.
+///
+/// Only TimescaleDB < 2.23 is affected, so that is where this runs. From 2.23
+/// on (timescaledb#8704) the `DELETE FROM ONLY <chunk>` that clears the
+/// uncompressed rows decompresses the chunk's batches and removes them too,
+/// which hides the missing delete.
+#[test]
+fn copying_a_compressed_chunk_twice_replaces_its_rows() -> Result<()> {
+    if skips_unless_ts_lt_223("copying_a_compressed_chunk_twice_replaces_its_rows") {
+        return Ok(());
+    }
+
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+    psql(&source_container, PsqlInput::Sql(COMPRESS_ALL_CHUNKS))?;
+
+    psql(&target_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &target_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+
+    let stage =
+        || TestConfigStage::new(&source_container, &target_container, "2023-06-01T00:00:00");
+
+    run_backfill(stage())?.assert().success();
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success();
+
+    // `clean` mirrors a user who considered the first backfill finished. It
+    // leaves the second pass to find the target chunks already compressed, with
+    // their compressed chunks already populated.
+    run_backfill(TestConfigClean::new(&target_container))?
+        .assert()
+        .success();
+
+    run_backfill(stage())?.assert().success();
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success();
+
+    let mut source_dbassert =
+        DbAssert::new(&source_container.connection_string())?.with_name("source");
+    let mut target_dbassert =
+        DbAssert::new(&target_container.connection_string())?.with_name("target");
+
+    for dbassert in [&mut source_dbassert, &mut target_dbassert] {
+        dbassert
+            .has_table_count("public", "metrics", 744)
+            .has_chunk_count("public", "metrics", 5)
+            .has_compressed_chunk_count("public", "metrics", 5);
+    }
+
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("Chunk verification failed").not());
 
     Ok(())
 }

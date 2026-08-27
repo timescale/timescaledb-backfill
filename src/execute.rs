@@ -539,6 +539,25 @@ async fn copy_compressed_chunk_data(
         false
     };
 
+    // Replace the target's compressed rows instead of appending to them, the
+    // same way the uncompressed path does. Without this a chunk copied twice
+    // ends up holding both copies of its compressed batches (issue #204), and
+    // nothing in the target catches it: the batches are written into the
+    // internal compressed table, underneath the uncompressed chunk that carries
+    // the hypertable's indexes and constraints.
+    //
+    // Where a `DELETE` reaches compressed rows this is already done: the
+    // `DELETE FROM ONLY <chunk>` that `copy_chunk_data` issued for the
+    // uncompressed rows decompressed the chunk's batches and removed them too,
+    // so there is nothing left here to delete.
+    //
+    // Deleting everything is the right scope here: a copy filtered by the
+    // completion point never reaches this function, it takes the
+    // decompress-and-copy-uncompressed branch in `copy_chunk` instead.
+    if !features::delete_reaches_compressed_rows() {
+        delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
+    }
+
     let copy_result = copy_chunk_from_source_to_target(
         source_tx,
         target_tx,

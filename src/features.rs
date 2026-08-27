@@ -12,6 +12,7 @@ static NO_SEQUENCE_NUMBER_IN_COMPRESSED_HYPERTABLES: OnceLock<bool> = OnceLock::
 static COMPRESSION_SETTINGS_WITH_COMPRESS_RELID: OnceLock<bool> = OnceLock::new();
 static HYPERCORE_TAM: OnceLock<bool> = OnceLock::new();
 static CAGG_INVALIDATION_TRIGGER: OnceLock<bool> = OnceLock::new();
+static DELETE_REACHES_COMPRESSED_ROWS: OnceLock<bool> = OnceLock::new();
 static CHUNK_CATALOG_USES_RELID: OnceLock<bool> = OnceLock::new();
 static HYPERTABLE_SPARSE_INDEX_METADATA: OnceLock<bool> = OnceLock::new();
 
@@ -28,6 +29,7 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
 
     let ts_ge_229 = VersionReq::parse(">=2.29.0").unwrap().matches(ts_version);
     let ts_ge_228 = VersionReq::parse(">=2.28.0").unwrap().matches(ts_version);
+    let ts_ge_223 = VersionReq::parse(">=2.23.0").unwrap().matches(ts_version);
     let ts_lt_223 = VersionReq::parse("<2.23.0").unwrap().matches(ts_version);
     let ts_lt_222 = VersionReq::parse("<2.22.0").unwrap().matches(ts_version);
     let ts_ge_219 = VersionReq::parse(">=2.19.0").unwrap().matches(ts_version);
@@ -75,6 +77,10 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     CAGG_INVALIDATION_TRIGGER
         .set(ts_lt_223)
         .map_err(|e| anyhow!("CAGG_INVALIDATION_TRIGGER already set to {}", e))?;
+
+    DELETE_REACHES_COMPRESSED_ROWS
+        .set(ts_ge_223)
+        .map_err(|e| anyhow!("DELETE_REACHES_COMPRESSED_ROWS already set to {}", e))?;
 
     CHUNK_CATALOG_USES_RELID
         .set(ts_ge_229)
@@ -131,6 +137,16 @@ pub fn cagg_invalidation_trigger() -> bool {
     *CAGG_INVALIDATION_TRIGGER
         .get()
         .expect("CAGG_INVALIDATION_TRIGGER is not set")
+}
+
+// Starting with TS 2.23 a `DELETE` on a compressed chunk decompresses the
+// batches it matches and removes their rows. Before that it only ever reached
+// the chunk's uncompressed rows, leaving the compressed ones in place. See
+// https://github.com/timescale/timescaledb/pull/8704.
+pub fn delete_reaches_compressed_rows() -> bool {
+    *DELETE_REACHES_COMPRESSED_ROWS
+        .get()
+        .expect("DELETE_REACHES_COMPRESSED_ROWS is not set")
 }
 
 // Starting with TS 2.29 the `_timescaledb_catalog.chunk` table stores the
