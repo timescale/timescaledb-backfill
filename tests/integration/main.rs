@@ -1632,20 +1632,6 @@ fn skips_unless_ts228(test: &str) -> bool {
     true
 }
 
-/// Reports a version-gated skip for a test that can only observe its bug below
-/// TimescaleDB 2.23. From 2.23 on (timescaledb#8704) the `DELETE` that clears a
-/// chunk's uncompressed rows also decompresses and removes its compressed
-/// batches, so the assertion holds there for an unrelated reason and would
-/// report coverage the run doesn't have. 2.22 is the only version in CI below
-/// the cutoff, so dropping it from the matrix takes this test with it.
-fn skips_unless_ts_lt_223(test: &str) -> bool {
-    if ts_version() < TS223 {
-        return false;
-    }
-    eprintln!("SKIPPED {test}: requires TimescaleDB < 2.23");
-    true
-}
-
 /// A chunk compressed under a pre-2.28 format carries `minmax` sparse-index
 /// metadata only. When such a chunk is backfilled into a target whose
 /// hypertable was configured under TS 2.28, `create_compressed_chunk` copies
@@ -1781,16 +1767,13 @@ fn filtered_copy_still_recompresses_on_unbacked_sparse_index_metadata() -> Resul
 /// the uncompressed chunk that carries the hypertable's indexes and
 /// constraints.
 ///
-/// Only TimescaleDB < 2.23 is affected, so that is where this runs. From 2.23
-/// on (timescaledb#8704) the `DELETE FROM ONLY <chunk>` that clears the
-/// uncompressed rows decompresses the chunk's batches and removes them too,
-/// which hides the missing delete.
+/// Only TimescaleDB < 2.23 could ever observe the duplication. From 2.23 on
+/// (timescaledb#8704) the `DELETE FROM ONLY <chunk>` that clears the
+/// uncompressed rows decompresses the chunk's batches and removes them too, so
+/// the assertion holds there for an unrelated reason. The invariant is the same
+/// on every version, so the test runs on all of them.
 #[test]
 fn copying_a_compressed_chunk_twice_replaces_its_rows() -> Result<()> {
-    if skips_unless_ts_lt_223("copying_a_compressed_chunk_twice_replaces_its_rows") {
-        return Ok(());
-    }
-
     let _ = pretty_env_logger::try_init();
 
     let docker = Cli::default();
@@ -1842,6 +1825,104 @@ fn copying_a_compressed_chunk_twice_replaces_its_rows() -> Result<()> {
             .has_table_count("public", "metrics", 744)
             .has_chunk_count("public", "metrics", 5)
             .has_compressed_chunk_count("public", "metrics", 5);
+    }
+
+    run_backfill(TestConfigVerify::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("Chunk verification failed").not());
+
+    Ok(())
+}
+
+static INSERT_SECOND_SERIES_FOR_MAY: &str = r"
+    INSERT INTO metrics (time, device_id, val)
+    SELECT time, 2, random()
+    FROM generate_series('2023-05-01T00:30:00Z'::timestamptz, '2023-05-31T23:30:00Z'::timestamptz, '1 hour'::interval) time;
+";
+
+static RECOMPRESS_ALL_CHUNKS: &str = r"
+    SELECT decompress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = true;
+    SELECT compress_chunk(format('%I.%I', chunk_schema, chunk_name)) FROM timescaledb_information.chunks WHERE is_compressed = false;
+";
+
+/// When the source chunk is partial but the target chunk isn't, `copy_chunk`
+/// writes the uncompressed rows through the hypertable rather than into the
+/// chunk, because setting a chunk's status to partial needs a permission
+/// `tsdbadmin` doesn't have. The delete that precedes the copy has to keep
+/// pointing at the chunk: `DELETE FROM ONLY <hypertable>` reaches only the
+/// hypertable's own heap, which is always empty, so it clears nothing and the
+/// copy adds to whatever the chunk already held.
+///
+/// The target chunk stops being partial once something folds its loose rows
+/// back into compressed form, which is what a compression policy does. That is
+/// what puts a second copy back on this branch with data already in place.
+#[test]
+fn copying_a_partial_chunk_through_the_hypertable_replaces_its_rows() -> Result<()> {
+    let _ = pretty_env_logger::try_init();
+
+    let docker = Cli::default();
+
+    let source_container = docker.run(timescaledb(pg_version(), ts_version()));
+    let target_container = docker.run(timescaledb(pg_version(), ts_version()));
+
+    psql(&source_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(&source_container, PsqlInput::Sql(INSERT_DATA_FOR_MAY))?;
+    psql(
+        &source_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+    psql(&source_container, PsqlInput::Sql(COMPRESS_ALL_CHUNKS))?;
+    // Inserted after compression, so these rows stay uncompressed in the
+    // already-compressed chunks and make every source chunk partial.
+    psql(
+        &source_container,
+        PsqlInput::Sql(INSERT_SECOND_SERIES_FOR_MAY),
+    )?;
+
+    psql(&target_container, PsqlInput::Sql(SETUP_HYPERTABLE))?;
+    psql(
+        &target_container,
+        PsqlInput::Sql(ENABLE_HYPERTABLE_COMPRESSION),
+    )?;
+
+    let stage =
+        || TestConfigStage::new(&source_container, &target_container, "2023-06-01T00:00:00");
+
+    run_backfill(stage())?
+        .assert()
+        .success()
+        .stdout(contains("Staged 5 chunks to copy"));
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("is partial in source, but not in target"));
+
+    // Stand in for a compression policy catching up with the target: the loose
+    // rows the copy just wrote are folded back into compressed form, which
+    // clears the chunks' partial status and puts the second copy back on the
+    // hypertable branch.
+    psql(&target_container, PsqlInput::Sql(RECOMPRESS_ALL_CHUNKS))?;
+
+    run_backfill(TestConfigClean::new(&target_container))?
+        .assert()
+        .success();
+
+    run_backfill(stage())?.assert().success();
+    run_backfill(TestConfigCopy::new(&source_container, &target_container))?
+        .assert()
+        .success()
+        .stdout(contains("is partial in source, but not in target"));
+
+    let mut source_dbassert =
+        DbAssert::new(&source_container.connection_string())?.with_name("source");
+    let mut target_dbassert =
+        DbAssert::new(&target_container.connection_string())?.with_name("target");
+
+    for dbassert in [&mut source_dbassert, &mut target_dbassert] {
+        dbassert
+            .has_table_count("public", "metrics", 1488)
+            .has_chunk_count("public", "metrics", 5);
     }
 
     run_backfill(TestConfigVerify::new(&source_container, &target_container))?

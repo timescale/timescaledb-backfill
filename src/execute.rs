@@ -96,6 +96,7 @@ pub async fn copy_chunk(
             target_tx,
             &task.source_chunk,
             &target_chunk,
+            &target_chunk,
             &task.filter,
             CopyMode::UncompressedAndCompressed,
         )
@@ -147,6 +148,7 @@ pub async fn copy_chunk(
             source_tx,
             target_tx,
             &task.source_chunk,
+            &target_chunk,
             &target_chunk.hypertable,
             &task.filter,
             UncompressedOnly,
@@ -157,6 +159,7 @@ pub async fn copy_chunk(
             source_tx,
             target_tx,
             &task.source_chunk,
+            &target_chunk,
             &target_chunk,
             &task.filter,
             UncompressedOnly,
@@ -232,6 +235,7 @@ async fn copy_chunk_data_and_recompress(
         source_tx,
         target_tx,
         &task.source_chunk,
+        target_chunk,
         target_chunk,
         &task.filter,
         CopyMode::UncompressedAndCompressed,
@@ -372,40 +376,51 @@ enum CopyMode {
     UncompressedAndCompressed,
 }
 
+/// Copies a source chunk's uncompressed rows into the target.
+///
+/// `target_chunk` is the chunk the rows belong to. Clearing the range and
+/// suspending the cagg invalidation trigger both act on it, because it is the
+/// relation that ends up holding the rows. `copy_into` is where the rows are
+/// written, which is that same chunk except when the caller has to route them
+/// through the hypertable to let TimescaleDB set the chunk's status. Deleting
+/// from the hypertable instead would clear nothing: `DELETE FROM ONLY
+/// <hypertable>` reaches only the hypertable's own heap, and a hypertable keeps
+/// every row in its chunks.
 async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
     source_tx: &Transaction<'_>,
     target_tx: &Transaction<'_>,
     source_table: &S,
-    target_table: &T,
+    target_chunk: &TargetChunk,
+    copy_into: &T,
     filter: &Option<String>,
     mode: CopyMode,
 ) -> Result<CopyResult> {
     debug!("Copying uncompressed chunk {}", source_table.quoted_name());
 
     let trigger_dropped = if features::cagg_invalidation_trigger() {
-        drop_invalidation_trigger(target_tx, &target_table.quoted_name()).await?
+        drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?
     } else {
         false
     };
 
     if let Some(filter) = filter {
-        delete_data_using_filter(target_tx, target_table, filter).await?;
+        delete_data_using_filter(target_tx, target_chunk, filter).await?;
     } else {
-        delete_all_rows_from_chunk(target_tx, &target_table.quoted_name()).await?;
+        delete_all_rows_from_chunk(target_tx, &target_chunk.quoted_name()).await?;
     }
 
     let copy_result = copy_chunk_from_source_to_target(
         source_tx,
         target_tx,
         &source_table.quoted_name(),
-        &target_table.quoted_name(),
+        &copy_into.quoted_name(),
         filter,
         mode == UncompressedOnly,
     )
     .await?;
 
     if trigger_dropped {
-        create_invalidation_trigger(target_tx, &target_table.quoted_name()).await?;
+        create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
     }
     debug!(
         "Finished copying uncompressed chunk {}. Starting analysis.",
@@ -413,7 +428,7 @@ async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
     );
 
     target_tx
-        .execute(&format!("analyze {}", target_table.quoted_name()), &[])
+        .execute(&format!("analyze {}", copy_into.quoted_name()), &[])
         .await?;
 
     debug!(
