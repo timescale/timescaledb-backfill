@@ -685,10 +685,15 @@ generate_tests!(
                         .has_table_count("public", "metrics", 744)
                         .has_chunk_count("public", "metrics", 5)
                         .has_cagg_mt_chunk_count("public", "cagg", 1);
-                    // TS >= 2.23 removed the cagg invalidation trigger; invalidation
-                    // is now tracked inline in the executor, so DML on chunks produces
-                    // invalidation log entries that we cannot suppress.
-                    if ts_version() < TS223 {
+                    // Backfilling a hypertable that has a cagg must not leave
+                    // invalidation entries behind: the cagg's materialized
+                    // hypertable is copied as-is, so the target is already
+                    // consistent. TS < 2.23 is kept clean by dropping
+                    // `ts_cagg_invalidation_trigger`, TS >= 2.28 by the
+                    // `timescaledb.skip_cagg_invalidation` GUC. In between the
+                    // trigger is gone and the GUC doesn't exist yet, so the
+                    // executor records entries we cannot suppress.
+                    if ts_version() < TS223 || ts_version() >= TS228 {
                         dbassert.has_table_count(
                             "_timescaledb_catalog",
                             "continuous_aggs_hypertable_invalidation_log",

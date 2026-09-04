@@ -15,6 +15,7 @@ static CAGG_INVALIDATION_TRIGGER: OnceLock<bool> = OnceLock::new();
 static DELETE_REACHES_COMPRESSED_ROWS: OnceLock<bool> = OnceLock::new();
 static CHUNK_CATALOG_USES_RELID: OnceLock<bool> = OnceLock::new();
 static HYPERTABLE_SPARSE_INDEX_METADATA: OnceLock<bool> = OnceLock::new();
+static SKIP_CAGG_INVALIDATION_GUC: OnceLock<bool> = OnceLock::new();
 
 pub async fn initialize_features(target: &Target) -> Result<()> {
     let mut ts_version = Version::parse(&fetch_tsdb_version(&target.client).await?)?;
@@ -89,6 +90,10 @@ pub async fn initialize_features(target: &Target) -> Result<()> {
     HYPERTABLE_SPARSE_INDEX_METADATA
         .set(ts_ge_228)
         .map_err(|e| anyhow!("HYPERTABLE_SPARSE_INDEX_METADATA already set to {}", e))?;
+
+    SKIP_CAGG_INVALIDATION_GUC
+        .set(ts_ge_228)
+        .map_err(|e| anyhow!("SKIP_CAGG_INVALIDATION_GUC already set to {}", e))?;
     Ok(())
 }
 
@@ -158,6 +163,18 @@ pub fn chunk_catalog_uses_relid() -> bool {
     *CHUNK_CATALOG_USES_RELID
         .get()
         .expect("CHUNK_CATALOG_USES_RELID is not set")
+}
+
+// Starting with TS 2.28 the `timescaledb.skip_cagg_invalidation` GUC suppresses
+// continuous-aggregate invalidation tracking for the session or transaction it
+// is set in. It is the supported replacement for dropping
+// `ts_cagg_invalidation_trigger`, which 2.23 removed when invalidation moved
+// into the executor. See
+// https://github.com/timescale/timescaledb/pull/9842.
+pub fn skip_cagg_invalidation_guc() -> bool {
+    *SKIP_CAGG_INVALIDATION_GUC
+        .get()
+        .expect("SKIP_CAGG_INVALIDATION_GUC is not set")
 }
 
 // Starting with TS 2.28 the hypertable-level `compression_settings.index`

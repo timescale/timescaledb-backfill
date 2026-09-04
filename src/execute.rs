@@ -379,8 +379,8 @@ enum CopyMode {
 /// Copies a source chunk's uncompressed rows into the target.
 ///
 /// `target_chunk` is the chunk the rows belong to. Clearing the range and
-/// suspending the cagg invalidation trigger both act on it, because it is the
-/// relation that ends up holding the rows. `copy_into` is where the rows are
+/// suspending cagg invalidation both act on it, because it is the relation that
+/// ends up holding the rows. `copy_into` is where the rows are
 /// written, which is that same chunk except when the caller has to route them
 /// through the hypertable to let TimescaleDB set the chunk's status. Deleting
 /// from the hypertable instead would clear nothing: `DELETE FROM ONLY
@@ -397,11 +397,8 @@ async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
 ) -> Result<CopyResult> {
     debug!("Copying uncompressed chunk {}", source_table.quoted_name());
 
-    let trigger_dropped = if features::cagg_invalidation_trigger() {
-        drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?
-    } else {
-        false
-    };
+    let cagg_invalidation =
+        suspend_cagg_invalidation(target_tx, &target_chunk.quoted_name()).await?;
 
     if let Some(filter) = filter {
         delete_data_using_filter(target_tx, target_chunk, filter).await?;
@@ -419,9 +416,8 @@ async fn copy_chunk_data<S: QuotedName, T: QuotedName>(
     )
     .await?;
 
-    if trigger_dropped {
-        create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
-    }
+    resume_cagg_invalidation(target_tx, &target_chunk.quoted_name(), cagg_invalidation).await?;
+
     debug!(
         "Finished copying uncompressed chunk {}. Starting analysis.",
         source_table.quoted_name()
@@ -450,6 +446,74 @@ async fn delete_data_using_filter(
         .execute(&format!("DELETE FROM {chunk_name} WHERE {filter}"), &[])
         .await?;
     debug!("Deleted {} rows from {chunk_name}", rows.human_count_bare());
+    Ok(())
+}
+
+/// What a copy did to stop its rows from being tracked as continuous-aggregate
+/// invalidations, so it can put it back afterwards.
+enum CaggInvalidation {
+    /// Nothing was suspended: either the chunk carries no invalidation trigger,
+    /// or the target runs a TimescaleDB between 2.23 and 2.28, where
+    /// invalidation is tracked in the executor with no way to opt out.
+    Tracked,
+    /// TS < 2.23: `ts_cagg_invalidation_trigger` was dropped from the chunk and
+    /// has to be recreated.
+    TriggerDropped,
+    /// TS >= 2.28: `timescaledb.skip_cagg_invalidation` was turned on for the
+    /// enclosing transaction and has to be turned back off.
+    GucSet,
+}
+
+/// Keeps the rows a copy writes into `chunk_name` out of the
+/// continuous-aggregate invalidation log.
+///
+/// The backfill copies a cagg's materialized hypertable as-is alongside the raw
+/// one, so the target is already consistent once both are in place. The
+/// invalidation entries would only buy an unnecessary re-materialization of
+/// ranges that are already materialized, on top of slowing the copy down.
+async fn suspend_cagg_invalidation(
+    tx: &Transaction<'_>,
+    chunk_name: &str,
+) -> Result<CaggInvalidation> {
+    if features::skip_cagg_invalidation_guc() {
+        set_skip_cagg_invalidation(tx, true).await?;
+        return Ok(CaggInvalidation::GucSet);
+    }
+    if features::cagg_invalidation_trigger() && drop_invalidation_trigger(tx, chunk_name).await? {
+        return Ok(CaggInvalidation::TriggerDropped);
+    }
+    Ok(CaggInvalidation::Tracked)
+}
+
+/// Undoes [`suspend_cagg_invalidation`], so the rest of the transaction records
+/// invalidations again.
+async fn resume_cagg_invalidation(
+    tx: &Transaction<'_>,
+    chunk_name: &str,
+    suspended: CaggInvalidation,
+) -> Result<()> {
+    match suspended {
+        CaggInvalidation::Tracked => Ok(()),
+        CaggInvalidation::TriggerDropped => create_invalidation_trigger(tx, chunk_name).await,
+        CaggInvalidation::GucSet => set_skip_cagg_invalidation(tx, false).await,
+    }
+}
+
+/// Sets `timescaledb.skip_cagg_invalidation` for the enclosing transaction.
+///
+/// The GUC is `PGC_USERSET`, so `tsdbadmin` can set it, and `SET LOCAL` keeps it
+/// from leaking past the transaction: a worker reuses its target connection for
+/// every chunk it claims, and the cagg refresh that ends a `copy` run also goes
+/// through a target connection, where invalidation tracking must be back on for
+/// caggs built on other caggs to be refreshed.
+async fn set_skip_cagg_invalidation(tx: &Transaction<'_>, skip: bool) -> Result<()> {
+    let value = if skip { "on" } else { "off" };
+    debug!("Setting timescaledb.skip_cagg_invalidation to '{value}'");
+    tx.execute(
+        &format!("SET LOCAL timescaledb.skip_cagg_invalidation = {value}"),
+        &[],
+    )
+    .await?;
     Ok(())
 }
 
@@ -548,11 +612,8 @@ async fn copy_compressed_chunk_data(
 ) -> Result<CopyResult> {
     debug!("Copying compressed chunk {}", source_chunk.quoted_name());
 
-    let trigger_dropped = if features::cagg_invalidation_trigger() {
-        drop_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?
-    } else {
-        false
-    };
+    let cagg_invalidation =
+        suspend_cagg_invalidation(target_tx, &target_chunk.quoted_name()).await?;
 
     // Replace the target's compressed rows instead of appending to them, the
     // same way the uncompressed path does. Without this a chunk copied twice
@@ -583,9 +644,7 @@ async fn copy_compressed_chunk_data(
     )
     .await?;
 
-    if trigger_dropped {
-        create_invalidation_trigger(target_tx, &target_chunk.quoted_name()).await?;
-    }
+    resume_cagg_invalidation(target_tx, &target_chunk.quoted_name(), cagg_invalidation).await?;
 
     debug!(
         "Finished copying compressed chunk {}. Starting analysis",
