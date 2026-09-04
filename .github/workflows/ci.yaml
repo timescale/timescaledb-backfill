@@ -30,6 +30,7 @@ jobs:
           filters: |
             files:
               - Cargo.toml
+              - Cargo.lock
               - '**.rs'
               - '**.sql'
               - .cargo/config.toml

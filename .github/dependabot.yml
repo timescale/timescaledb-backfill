@@ -12,7 +12,15 @@ updates:
     commit-message:
       prefix: "chore(deps):"
     groups:
+      # A group covers version updates only unless it says otherwise, so
+      # security updates need a group of their own or they arrive one pull
+      # request per advisory.
       dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
         patterns:
           - "*"
   - package-ecosystem: "github-actions"
@@ -23,5 +31,10 @@ updates:
       prefix: "chore(deps):"
     groups:
       dependencies:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      security:
+        applies-to: security-updates
         patterns:
           - "*"
