@@ -1,6 +1,6 @@
 # Backfill Internals
 
-> Design record migrated from Slab (2026-07); audited against this repo's source at migration time: **implemented as described** - the shipped tool drops `ts_cagg_invalidation_trigger` on each target chunk before copying and recreates it afterwards (`src/execute.rs`), streaming `COPY` directly between source and target connections (the named-pipe `psql` flow below was the exploration of that technique). Companion to the [Backfill tool design document](backfill-tool.md).
+> Design record migrated from Slab (2026-07); audited against this repo's source at migration time: **implemented as described**, with one detail that has moved on since - the shipped tool still suspends invalidation around each copy, but how it does so now depends on the target's TimescaleDB version (see below), streaming `COPY` directly between source and target connections (the named-pipe `psql` flow below was the exploration of that technique). Companion to the [Backfill tool design document](backfill-tool.md).
 
 ## Backfilling Continuous Aggregates
 
@@ -19,7 +19,13 @@ We don't want to recalculate the chunks in `mt` in time frame `b`. We want to mi
 
 When we backfill the chunks from `ht` in time frame `b`, there is a trigger that will invalidate the chunks in `mt` in time frame `b`. That will cause the cagg to refresh all the chunks in time frame `b`. It will also slow down the backfill into `ht`.
 
-Thus, when we backfill chunks for a hypertable that has one or more continuous aggregates defined on it, we need to drop or disable the invalidation trigger on the chunk prior to copying into it, and then create or enable the trigger when we finish.
+Thus, when we backfill chunks for a hypertable that has one or more continuous aggregates defined on it, we need to suspend invalidation tracking before copying into the chunk and restore it when we finish.
+
+How that is done depends on the target's TimescaleDB version (`suspend_cagg_invalidation` in `src/execute.rs`):
+
+- **< 2.23**: drop `ts_cagg_invalidation_trigger` from the target chunk before the copy and recreate it afterwards. `ALTER TABLE ... DISABLE TRIGGER` is not an option, TimescaleDB intercepts it and prohibits it.
+- **>= 2.23, < 2.28**: 2.23 removed the trigger and moved invalidation into the executor, which leaves no way to opt out. The copy records invalidation entries, and the cagg re-materializes ranges that the backfill already brought over.
+- **>= 2.28**: `SET LOCAL timescaledb.skip_cagg_invalidation = on` for the duration of the copy ([timescaledb#9842](https://github.com/timescale/timescaledb/pull/9842)). It is a `PGC_USERSET` GUC, so `tsdbadmin` can set it. `SET LOCAL` matters: it must not leak into the cagg refresh at the end of a `copy` run, where a cagg built on another cagg needs its invalidations recorded to be refreshed in turn.
 
 ## Streaming Copy with psql
 

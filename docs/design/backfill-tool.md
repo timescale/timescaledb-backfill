@@ -9,6 +9,10 @@
 >    [`README.md`](../../README.md) for current usage.
 > 2. It references [Hypershift](https://github.com/timescale/hypershift), which
 >    is now legacy: not GA and no longer a recommended production migration tool.
+> 3. Dropping and recreating the invalidation trigger, described below, is only
+>    how the tool suspends continuous aggregate invalidation on TimescaleDB
+>    < 2.23. See [Backfill internals](backfill-internals.md) for what it does on
+>    newer versions.
 
 ## Ubiquitous language
 
