@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.15.1](https://github.com/timescale/timescaledb-backfill/compare/v0.15.0...v0.15.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* clear the target chunk when the copy goes through the hypertable ([5de48a1](https://github.com/timescale/timescaledb-backfill/commit/5de48a1a65981079165a1c11d6ae7ff8777e1119))
+* keep a chunk copied twice from doubling its data ([1f5cb21](https://github.com/timescale/timescaledb-backfill/commit/1f5cb21d07fe099fe1fb743c51eefafb04bbb1ea))
+* make a double ctrl-c actually stop in-flight copies ([391232d](https://github.com/timescale/timescaledb-backfill/commit/391232d8da27d531ee63001f271b8b08dc0d5d80))
+* unblock dependabot PRs from the commit body length rule ([d4928f0](https://github.com/timescale/timescaledb-backfill/commit/d4928f01d114deeda588111b85cec6b033bff48f))
+
+
+### Miscellaneous
+
+* **deps:** bump the dependencies group across 1 directory with 3 updates ([e7290cd](https://github.com/timescale/timescaledb-backfill/commit/e7290cde13cafd566618d476ec7edc1ba237bf60))
+* **deps:** bump the security group across 1 directory with 10 updates ([d6083bb](https://github.com/timescale/timescaledb-backfill/commit/d6083bb2bd04f39fbc4016991815e9b3bda672bd))
+
 ## [0.15.0](https://github.com/timescale/timescaledb-backfill/compare/v0.14.0...v0.15.0) (2026-08-26)
 
 
