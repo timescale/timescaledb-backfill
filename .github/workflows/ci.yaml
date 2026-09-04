@@ -23,8 +23,8 @@ jobs:
       files: ${{ steps.filter.outputs.files }}
     steps:
       - name: Setup | Checkout submodules
-        uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
         id: filter
         with:
           filters: |
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
@@ -56,14 +56,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: 1.85.0
           targets: x86_64-unknown-linux-musl
           components: clippy, rustfmt
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Cargo | Rustfmt
         run: cargo fmt -- --check
@@ -91,7 +91,7 @@ jobs:
     continue-on-error: ${{ matrix.tsversion == 'nightly' }}
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Note: this wizardry allows git dependencies to be specified as ssh:// uris in Cargo.toml, but
       # be checked out with our ORG_AUTOMATION_TOKEN PAT. Thank god for stackoverflow.
@@ -114,14 +114,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: 1.85.0
           targets: x86_64-unknown-linux-musl
           components: clippy, rustfmt
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # This is required for the integration tests. If we move them to their
       # own action we can remove it.
