@@ -6,7 +6,7 @@ use crate::timescale::{
     fetch_tsdb_version, initialize_source_proc_schema, initialize_target_proc_schema,
 };
 use crate::workers::{PoolMessage, PROCESSED_COUNT};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use clap::{Args, Parser, Subcommand};
 use console::Term;
 use features::initialize_features;
@@ -375,6 +375,7 @@ async fn main() -> Result<()> {
         while let Ok(backtrace) = rx.try_recv() {
             backtraces.push(backtrace.to_string());
         }
+        let err = with_causes_in_summary(err);
         if backtraces.is_empty() {
             bail!(err);
         }
@@ -382,6 +383,22 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Only the outermost error reaches the first line of the message a user sees.
+/// Some errors say nothing useful on their own: tokio-postgres reports a bare
+/// "db error" and leaves the server's message to its source. Join the chain so
+/// the summary line names the actual failure.
+fn with_causes_in_summary(err: Error) -> Error {
+    if err.chain().len() < 2 {
+        return err;
+    }
+    let summary = err
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ");
+    err.context(summary)
 }
 
 async fn run(args: &CliArgs) -> Result<CommandResult> {
@@ -678,4 +695,38 @@ async fn report_telemetry(
     };
     report(&target, &telemetry).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_causes_in_summary;
+    use anyhow::anyhow;
+
+    #[test]
+    fn summary_names_the_cause_not_just_the_outer_error() {
+        let err = with_causes_in_summary(
+            anyhow!(r#"ERROR: table "metrics" is not a hypertable"#).context("db error"),
+        );
+
+        assert_eq!(
+            err.to_string(),
+            r#"db error: ERROR: table "metrics" is not a hypertable"#
+        );
+        assert_eq!(
+            format!("{err:?}"),
+            r#"db error: ERROR: table "metrics" is not a hypertable
+
+Caused by:
+    0: db error
+    1: ERROR: table "metrics" is not a hypertable"#
+        );
+    }
+
+    #[test]
+    fn lone_error_is_not_repeated_as_its_own_cause() {
+        let err = with_causes_in_summary(anyhow!("connection closed"));
+
+        assert_eq!(err.to_string(), "connection closed");
+        assert_eq!(format!("{err:?}"), "connection closed");
+    }
 }

@@ -2976,7 +2976,8 @@ fn telemetry_captures_error_reason() -> Result<()> {
     .stderr(
         contains("Error: db error: ERROR: table \"metrics\" is not a hypertable").and(contains(
             r#"Caused by:
-    ERROR: table "metrics" is not a hypertable"#,
+    0: db error
+    1: ERROR: table "metrics" is not a hypertable"#,
         )),
     );
 
@@ -2987,7 +2988,7 @@ fn telemetry_captures_error_reason() -> Result<()> {
     target_dbassert.has_telemetry(vec![assert_error_telemetry(
         "stage".into(),
         vec![
-            r#"db error: ERROR: table "metrics" is not a hypertable"#,
+            r#"db error"#,
             r#"ERROR: table "metrics" is not a hypertable"#,
         ],
     )]);
