@@ -47,7 +47,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.85.0
           targets: x86_64-unknown-linux-musl
@@ -66,7 +66,7 @@ jobs:
           gh release upload ${{ needs.release-please.outputs.tag_name }} ${TARFILE_NAME}
 
       - name: Configure aws credentials
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::818196790983:role/upload-releases-to-assets.timescale.com
           aws-region: us-east-1
