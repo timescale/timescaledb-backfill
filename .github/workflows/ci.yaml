@@ -128,7 +128,9 @@ jobs:
       # own action we can remove it.
       - name: Install PG17
         run: |
-          sudo apt-get --purge remove postgresql-16 postgresql-client-16 -y
+          # Remove whichever PostgreSQL the runner image preinstalls, so the
+          # PG17 client tools are the only ones on the PATH.
+          sudo apt-get --purge remove -y $(dpkg-query -W -f='${Package}\n' 'postgresql-[0-9]*' 'postgresql-client-[0-9]*' 2>/dev/null)
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/pgdg.asc &>/dev/null
           sudo apt update
