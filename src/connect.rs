@@ -1,7 +1,9 @@
 use anyhow::Result;
 use rustls::{
-    client::{ServerCertVerified, ServerCertVerifier},
-    ClientConfig,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider},
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    ClientConfig, DigitallySignedStruct, SignatureScheme,
 };
 use std::sync::Arc;
 use tokio_postgres::IsolationLevel::Serializable;
@@ -9,26 +11,62 @@ use tokio_postgres::{config::SslMode, Client, Config, NoTls, SimpleQueryMessage,
 use tokio_postgres_rustls::MakeRustlsConnect;
 use tracing::{info, trace, warn};
 
-struct NoCertVerifier {}
+/// Accepts any server certificate, but still checks handshake signatures.
+#[derive(Debug)]
+struct NoCertVerifier(Arc<CryptoProvider>);
 
 impl ServerCertVerifier for NoCertVerifier {
     fn verify_server_cert(
         &self,
-        _: &rustls::Certificate,
-        _: &[rustls::Certificate],
-        _: &rustls::ServerName,
-        _: &mut dyn Iterator<Item = &[u8]>,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
         _: &[u8],
-        _: std::time::SystemTime,
+        _: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 
 async fn connect_ssl(config: &Config) -> Result<Client, tokio_postgres::Error> {
-    let tls_config = ClientConfig::builder()
-        .with_safe_defaults()
-        .with_custom_certificate_verifier(Arc::new(NoCertVerifier {}))
+    let provider = Arc::new(ring::default_provider());
+    let tls_config = ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .expect("ring provider supports the default protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertVerifier(provider)))
         .with_no_client_auth();
 
     let tls = MakeRustlsConnect::new(tls_config);
