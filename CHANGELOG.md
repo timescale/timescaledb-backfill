@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.1](https://github.com/timescale/timescaledb-backfill/compare/v0.16.0...v0.16.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** update rustls to 0.23 to clear security advisories ([c2c42a5](https://github.com/timescale/timescaledb-backfill/commit/c2c42a5493602b9ec01953a32568d8f4eb946273))
+
+
+### Miscellaneous
+
+* use the shared org Renovate presets ([02f60a7](https://github.com/timescale/timescaledb-backfill/commit/02f60a7501164e89fb111410f7465ab16e3553da))
+
 ## [0.16.0](https://github.com/timescale/timescaledb-backfill/compare/v0.15.0...v0.16.0) (2026-09-15)
 
 
